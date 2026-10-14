@@ -46,7 +46,7 @@ button { border: 0; border-radius: 9px; padding: 9px 11px; font-size: 11px; font
 .metric strong { font-size: 18px; }
 .metric:nth-child(n+3) strong { font-size: 11px; }
 .section-title { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; }
-.channel-grid { display: grid; grid-template-columns: repeat(3,1fr); gap: 7px; margin-top: 10px; }
+.channel-grid { display: grid; grid-template-columns: repeat(2,1fr); gap: 7px; margin-top: 10px; }
 .channel { padding: 9px; border-radius: 10px; background: #f6f8fb; border: 1px solid #edf0f5; }
 .channel strong { display: block; font-size: 11px; }
 .channel span { display: block; margin-top: 4px; color: #6f7a8b; font-size: 9px; word-break: break-word; }

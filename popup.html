@@ -13,7 +13,7 @@
         <img src="icon48.png" alt="">
         <div><h1>Web Monitor</h1><p>Monitoramento local de filas web</p></div>
       </div>
-      <span class="version">v0.5</span>
+      <span class="version">v0.5.1</span>
     </header>
 
     <nav class="tabs">
@@ -54,6 +54,7 @@
       <section class="card compact-card">
         <div class="section-title"><div><h2>Itens atuais</h2><p>Último estado capturado</p></div><button id="focusTabBtn" class="link-btn">Abrir fila</button></div>
         <div id="itemsList" class="items empty">Nenhum estado salvo.</div>
+        <p id="coverageDetail" class="subtle"></p>
       </section>
     </section>
 
@@ -99,12 +100,15 @@
         <div class="step-content">
           <h2>Comportamento</h2>
           <label for="monitorName">Nome local do monitor</label>
-          <input id="monitorName" type="text" value="Fila SOC N2">
+          <input id="monitorName" type="text" value="Monitor">
           <div class="inline-fields">
             <div><label for="intervalMinutes">Verificar a cada</label><div class="suffix"><input id="intervalMinutes" type="number" min="1" max="1440" value="5"><span>min</span></div></div>
           </div>
           <label class="toggle"><input id="alertOnNewItem" type="checkbox" checked><span><strong>Novo item</strong><small>Alertar quando surgir um novo identificador.</small></span></label>
           <label class="toggle"><input id="alertOnCountIncrease" type="checkbox" checked><span><strong>Aumento da fila</strong><small>Alertar quando o total aumentar.</small></span></label>
+          <label class="toggle"><input id="alertOnRemovedItem" type="checkbox"><span><strong>Item removido</strong><small>Alertar somente quando a lista completa confirmar a saída.</small></span></label>
+          <label class="toggle"><input id="alertOnCountDecrease" type="checkbox"><span><strong>Redução da fila</strong><small>Alertar quando o total diminuir.</small></span></label>
+          <p>Em listas paginadas, os alertas usam o total. “Ler agora” verifica a fila sem enviar notificações.</p>
           <button id="saveBtn" class="primary full">Salvar configuração</button>
         </div>
       </section>
@@ -120,7 +124,7 @@
 
       <section class="card integration-card">
         <div class="integration-head"><div class="integration-icon">✈️</div><div><h2>Telegram</h2><p>Push remoto sanitizado para o celular.</p></div></div>
-        <div class="privacy">Nunca envia IDs, quantidade da fila, nome da fila, URL ou conteúdo do chamado.</div>
+        <div class="privacy">O token fica no perfil local do Chrome; não é um cofre de credenciais. Use um bot dedicado. Nunca envia IDs, quantidade da fila, nome da fila, URL ou conteúdo do chamado.</div>
         <label class="toggle"><input id="telegramEnabled" type="checkbox"><span><strong>Ativar Telegram</strong></span></label>
         <label for="telegramBotToken">Token do bot</label>
         <input id="telegramBotToken" type="password" placeholder="123456:ABC...">
@@ -146,7 +150,7 @@
       </section>
     </section>
 
-    <div id="toast" class="toast hidden"></div>
+    <div id="toast" class="toast hidden" role="status" aria-live="polite"></div>
   </main>
   <script src="popup.js"></script>
 </body>

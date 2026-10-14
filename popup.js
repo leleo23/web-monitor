@@ -2,7 +2,7 @@ const $ = (selector) => document.querySelector(selector);
 const $$ = (selector) => [...document.querySelectorAll(selector)];
 
 const ui = Object.fromEntries([
-  "monitorName","intervalMinutes","counterSelector","itemSelector","alertOnNewItem","alertOnCountIncrease",
+  "monitorName","intervalMinutes","counterSelector","itemSelector","alertOnNewItem","alertOnCountIncrease","alertOnRemovedItem","alertOnCountDecrease",
   "notificationsEnabled","soundEnabled","telegramEnabled","telegramBotToken","telegramChatId",
   "automationEnabled","automationWebhookUrl","statusDot","monitorStatus","healthStatus","healthDetail",
   "boundTabText","boundTabUrl","counterSummary","itemsSummary","totalValue","visibleValue","lastCheck","nextCheck",
@@ -10,7 +10,7 @@ const ui = Object.fromEntries([
 ].map((id) => [id, $(`#${id}`)]));
 
 let currentConfig = null;
-let statusCache = null;
+let formDirty = false;
 
 function toast(message, type = "") {
   ui.toast.textContent = message;
@@ -32,6 +32,8 @@ function getFormConfig() {
     itemSelector: ui.itemSelector.value.trim(),
     alertOnNewItem: ui.alertOnNewItem.checked,
     alertOnCountIncrease: ui.alertOnCountIncrease.checked,
+    alertOnRemovedItem: ui.alertOnRemovedItem.checked,
+    alertOnCountDecrease: ui.alertOnCountDecrease.checked,
     notificationsEnabled: ui.notificationsEnabled.checked,
     soundEnabled: ui.soundEnabled.checked,
     telegramEnabled: ui.telegramEnabled.checked,
@@ -51,6 +53,8 @@ async function saveConfig({ message = true } = {}) {
   currentConfig = { ...(currentConfig || {}), ...getFormConfig() };
   const response = await send("SAVE_CONFIG", { config: currentConfig });
   if (!response.ok) { toast(response.error || "Falha ao salvar.", "error"); return false; }
+  currentConfig = response.config;
+  formDirty = false;
   if (message) toast("Configuração salva.", "success");
   await refresh();
   return true;
@@ -82,14 +86,24 @@ async function createDedicatedTab() {
   currentConfig = {
     ...(currentConfig || {}), ...getFormConfig(),
     tabId: dedicatedTab.id, boundUrl: activeTab.url, boundOrigin: parsed.origin,
-    boundTitle: activeTab.title || parsed.hostname, enabled: false
+    boundTitle: activeTab.title || parsed.hostname, enabled: false, resetBaseline: true
   };
-  await send("SAVE_CONFIG", { config: currentConfig });
+  const saved = await send("SAVE_CONFIG", { config: currentConfig });
+  if (!saved.ok) { await chrome.tabs.remove(dedicatedTab.id); throw new Error(saved.error || "Falha ao salvar a nova fonte."); }
+  currentConfig = saved.config;
+  formDirty = false;
   toast("Aba dedicada criada. Aguarde o carregamento e faça a seleção visual.", "success");
   await refresh();
 }
 
 async function beginPicker(type) {
+  let frames = [];
+  try { frames = await chrome.webNavigation.getAllFrames({ tabId: currentConfig?.tabId }); }
+  catch { /* The worker can recreate a closed dedicated tab. */ }
+  const origins = [...new Set((frames || []).filter((frame) => /^https?:/i.test(frame.url))
+    .map((frame) => `${new URL(frame.url).origin}/*`))];
+  if (origins.length && !(await chrome.permissions.contains({ origins })) &&
+      !(await chrome.permissions.request({ origins }))) return toast("Permissão para ler os frames da fila não foi concedida.", "error");
   if (!(await saveConfig({ message: false }))) return;
   toast("Abrindo seletor visual…");
   const response = await send("BEGIN_ELEMENT_PICKER", { selectionType: type });
@@ -101,7 +115,7 @@ async function startMonitoring() {
   if (!(await saveConfig({ message: false }))) return;
   const response = await send("START_MONITORING");
   if (!response.ok) return toast(response.error || "Falha ao iniciar.", "error");
-  toast(response.result?.baselineCreated ? "Monitoramento iniciado e baseline criado." : "Monitoramento iniciado.", "success");
+  toast(response.result?.pending || response.result?.skipped ? response.result.reason : response.result?.baselineCreated ? "Monitoramento iniciado e baseline criado." : "Monitoramento iniciado.", "success");
   await refresh();
 }
 
@@ -113,9 +127,10 @@ async function stopMonitoring() {
 }
 
 async function readNow() {
+  if (!(await saveConfig({ message: false }))) return;
   const response = await send("CHECK_NOW", { refresh: false });
   if (!response.ok) return toast(response.error || "Falha na leitura.", "error");
-  toast(response.result?.baselineCreated ? "Baseline criado." : "Leitura concluída.", "success");
+  toast(response.result?.pending || response.result?.skipped ? response.result.reason : response.result?.baselineCreated ? "Baseline criado." : "Leitura concluída sem enviar alertas.", "success");
   await refresh();
 }
 
@@ -138,9 +153,12 @@ async function discoverTelegram() {
   if (!(await saveConfig({ message: false }))) return;
   const response = await send("DISCOVER_TELEGRAM_CHAT");
   if (!response.ok) return toast(response.error || "Chat ID não encontrado.", "error");
+  if (!window.confirm(`Usar a conversa “${response.chatName}” (Chat ID ${response.chatId}) para receber os alertas?`)) {
+    toast("Destinatário anterior mantido."); return;
+  }
   ui.telegramChatId.value = response.chatId;
-  toast(`Chat encontrado: ${response.chatName}.`, "success");
-  await refresh();
+  if (!(await saveConfig({ message: false }))) return;
+  toast("Destinatário confirmado e salvo.", "success");
 }
 
 async function testTelegram() {
@@ -179,12 +197,14 @@ async function testAutomation() {
 
 function renderConfig(config) {
   currentConfig = config || {};
-  ui.monitorName.value = config?.name ?? "Fila SOC N2";
+  ui.monitorName.value = config?.name ?? "Monitor";
   ui.intervalMinutes.value = config?.intervalMinutes ?? 5;
   ui.counterSelector.value = config?.counterSelector ?? "";
   ui.itemSelector.value = config?.itemSelector ?? "";
   ui.alertOnNewItem.checked = config?.alertOnNewItem !== false;
   ui.alertOnCountIncrease.checked = config?.alertOnCountIncrease !== false;
+  ui.alertOnRemovedItem.checked = config?.alertOnRemovedItem === true;
+  ui.alertOnCountDecrease.checked = config?.alertOnCountDecrease === true;
   ui.notificationsEnabled.checked = config?.notificationsEnabled !== false;
   ui.soundEnabled.checked = config?.soundEnabled !== false;
   ui.telegramEnabled.checked = config?.telegramEnabled === true;
@@ -198,6 +218,10 @@ function renderConfig(config) {
   ui.counterSummary.textContent = locatorSummary(config?.counterLocator, config?.counterSelector, "contador");
   ui.itemsSummary.textContent = locatorSummary(config?.itemLocator, config?.itemSelector, "itens");
 
+  renderMonitorState(config);
+}
+
+function renderMonitorState(config) {
   if (config?.enabled) {
     ui.monitorStatus.textContent = "Monitorando";
     ui.statusDot.className = "dot running";
@@ -236,6 +260,7 @@ function renderHealth(health) {
 function renderChannels(status, config) {
   const defs = [
     ["Desktop", status?.local, config?.notificationsEnabled !== false, true],
+    ["Som", status?.sound, true, config?.soundEnabled !== false],
     ["Telegram", status?.telegram, Boolean(config?.telegramBotToken && config?.telegramChatId), config?.telegramEnabled === true],
     ["Automação", status?.automation, Boolean(config?.automationWebhookUrl), config?.automationEnabled === true]
   ];
@@ -253,13 +278,17 @@ function renderChannels(status, config) {
 }
 
 function renderSnapshot(snapshot) {
+  $('#coverageDetail').textContent = !snapshot ? '' : snapshot.coverage === 'full'
+    ? 'Lista completa: entradas e saídas de chamados podem ser confirmadas.'
+    : 'Lista parcial: alertas de IDs ficam suspensos; alterações do total continuam monitoradas.';
   ui.totalValue.textContent = typeof snapshot?.total === "number" ? snapshot.total : "—";
   ui.visibleValue.textContent = snapshot?.items?.length ?? "—";
+  ui.visibleValue.title = snapshot?.coverage === "full" ? "Todos os chamados do total estão visíveis." : "Lista parcial: alertas de IDs ficam suspensos; alterações do total continuam monitoradas.";
   ui.lastCheck.textContent = fmtTime(snapshot?.checkedAt);
   ui.itemsList.innerHTML = "";
   if (!snapshot?.items?.length) {
     ui.itemsList.className = "items empty";
-    ui.itemsList.textContent = "Nenhum estado salvo.";
+    ui.itemsList.textContent = snapshot?.total === 0 ? "Fila vazia confirmada." : "Nenhum estado salvo.";
     return;
   }
   ui.itemsList.className = "items";
@@ -285,7 +314,7 @@ function renderHistory(history) {
     return;
   }
   ui.historyList.className = "history";
-  history.slice(0, 30).forEach((entry) => {
+  history.forEach((entry) => {
     const row = document.createElement("div");
     row.className = "history-row";
     const time = document.createElement("div");
@@ -302,9 +331,17 @@ function renderHistory(history) {
 async function refresh() {
   const response = await send("GET_STATUS");
   if (!response.ok) return toast(response.error || "Falha ao carregar status.", "error");
-  statusCache = response;
-  renderConfig(response.config);
+  if (!formDirty) renderConfig(response.config);
+  else currentConfig = response.config || {};
+  renderMonitorState(response.config);
   renderHealth(response.health);
+  if (response.lastError) ui.healthDetail.textContent = response.lastError.message;
+  if (response.pending) {
+    ui.healthStatus.textContent = "🟡 Aguardando confirmação";
+    ui.healthDetail.textContent = "Possível fila vazia. Última leitura válida preservada.";
+  } else if (response.effectError && !response.lastError) {
+    ui.healthDetail.textContent = "Leitura válida; falha ao atualizar histórico ou apresentação.";
+  }
   renderChannels(response.channelStatus, response.config);
   renderSnapshot(response.snapshot);
   renderHistory(response.history);
@@ -316,20 +353,40 @@ $$('.tab').forEach((button) => button.addEventListener('click', () => {
   $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${button.dataset.tab}`));
 }));
 
-$('#createDedicatedBtn').addEventListener('click', createDedicatedTab);
-$('#pickCounterBtn').addEventListener('click', () => beginPicker('counter'));
-$('#pickItemsBtn').addEventListener('click', () => beginPicker('items'));
-$('#saveBtn').addEventListener('click', () => saveConfig());
-$('#startBtn').addEventListener('click', startMonitoring);
-$('#stopBtn').addEventListener('click', stopMonitoring);
-$('#testCaptureBtn').addEventListener('click', readNow);
-$('#testAlertBtn').addEventListener('click', testLocal);
-$('#saveTelegramBtn').addEventListener('click', saveTelegram);
-$('#discoverChatBtn').addEventListener('click', discoverTelegram);
-$('#testTelegramBtn').addEventListener('click', testTelegram);
-$('#saveAutomationBtn').addEventListener('click', saveAutomation);
-$('#testAutomationBtn').addEventListener('click', testAutomation);
-$('#focusTabBtn').addEventListener('click', () => send('FOCUS_MONITOR_TAB'));
-$('#clearHistoryBtn').addEventListener('click', async () => { await send('CLEAR_HISTORY'); toast('Histórico limpo.', 'success'); await refresh(); });
+function bindAction(id, action) {
+  $(id).addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try { await action(); }
+    catch (error) { toast(error.message || "Não foi possível concluir a ação.", "error"); }
+    finally { button.disabled = false; await refresh(); }
+  });
+}
 
+bindAction('#createDedicatedBtn', createDedicatedTab);
+bindAction('#pickCounterBtn', () => beginPicker('counter'));
+bindAction('#pickItemsBtn', () => beginPicker('items'));
+bindAction('#saveBtn', () => saveConfig());
+bindAction('#startBtn', startMonitoring);
+bindAction('#stopBtn', stopMonitoring);
+bindAction('#testCaptureBtn', readNow);
+bindAction('#testAlertBtn', testLocal);
+bindAction('#saveTelegramBtn', saveTelegram);
+bindAction('#discoverChatBtn', discoverTelegram);
+bindAction('#testTelegramBtn', testTelegram);
+bindAction('#saveAutomationBtn', saveAutomation);
+bindAction('#testAutomationBtn', testAutomation);
+bindAction('#focusTabBtn', async () => {
+  const response = await send('FOCUS_MONITOR_TAB');
+  if (!response.ok) throw new Error(response.error || 'Não foi possível abrir a fila.');
+});
+bindAction('#clearHistoryBtn', async () => {
+  const response = await send('CLEAR_HISTORY');
+  if (!response.ok) throw new Error(response.error || 'Falha ao limpar histórico.');
+  toast('Histórico limpo.', 'success');
+});
+$$('input, textarea').forEach((field) => field.addEventListener('input', () => { formDirty = true; }));
+chrome.storage.onChanged.addListener((_changes, area) => {
+  if (area === 'local') refresh().catch(() => toast('Falha ao atualizar status.', 'error'));
+});
 refresh();
