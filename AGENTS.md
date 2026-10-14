@@ -8,4 +8,7 @@
 - `npm run check` and `npm test` are required for logic changes. Run relevant browser fixtures with `npm run test:browser`; an installed Chromium can be selected through `CHROMIUM_PATH`.
 - Browser fixtures simulate extension APIs. Do not claim that MV3 installation, real alarm lifecycle, corporate systems or external integrations work from fixture results alone. Never override browser administrative policy to test an extension.
 - Record behavior changes in CHANGELOG.md and keep manifest/package versions consistent. Avoid large unrelated commits.
-- Before store publication, consult current official Chrome Web Store requirements. License, multiple queues, adapters and corporate credential custody are separate work items.
+- Each monitor has isolated state and an alarm. Always pass its ID to asynchronous storage/delivery operations; switching the popup must not redirect in-flight work to another monitor.
+- Insights use retained local events and samples. Mark count-based estimates and incomplete history; never infer ticket arrivals from arbitrary text changes.
+- Keep all four sounds bundled locally and validate audio IDs against the shared registry.
+- Before store publication, consult current official Chrome Web Store requirements. License, adapters and corporate credential custody are separate work items.

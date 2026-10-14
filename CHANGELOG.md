@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.6.0
+
+### Added
+
+- Monitor visual para texto, contador ou indicador: highlight, prévia revalidada, confirmação, alternativas semânticas e aviso de localização frágil.
+- Home com resumo global, monitores, estados acessíveis, ações individuais e atividade recente.
+- Insights locais de hoje: quantidade atual, entradas/saídas, pico/horário, alterações, última mudança e gráfico SVG leve.
+- Quatro sons locais (Pulse, Bell, Digital, Critical), prévia, volume, persistência e mute por monitor.
+- Monitores identificados e independentes, até 20 por instalação, com estado/histórico/alarmes próprios e remoção individual.
+
+### Changed
+
+- Migração idempotente conserva fila, configurações, credenciais, histórico e snapshots existentes nos seus campos originais.
+- Leituras numéricas retidas em até 288 amostras por monitor; insights explicam cobertura e estimativas por variação do total.
+- Eventos estruturados distinguem mudança de texto, variação numérica, IDs e entrega; textos arbitrários não viram entradas/saídas de chamados.
+- ZIP de instalação tem manifest.json diretamente na raiz, evitando uma pasta adicional após extrair.
+
+### Validation
+
+- Regressões da v0.5.1 mantidas; novos testes de migração, isolamento, reinício simulado, prévia, insights e áudio.
+- Fixtures Chromium cobrem seleção, fallback, cancelamento, UI e decodificação dos quatro WAVs. Instalação MV3 e reinício real do Chrome permanecem verificações manuais.
+
 ## 0.5.1
 
 ### Fixed
