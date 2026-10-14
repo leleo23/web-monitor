@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Web Monitor</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <main class="app">
+    <header class="topbar">
+      <div class="brand">
+        <img src="icon48.png" alt="">
+        <div><h1>Web Monitor</h1><p>Monitoramento local de filas web</p></div>
+      </div>
+      <span class="version">v0.5</span>
+    </header>
+
+    <nav class="tabs">
+      <button class="tab active" data-tab="dashboard">Visão geral</button>
+      <button class="tab" data-tab="setup">Configurar</button>
+      <button class="tab" data-tab="integrations">Integrações</button>
+      <button class="tab" data-tab="history">Histórico</button>
+    </nav>
+
+    <section id="tab-dashboard" class="tab-panel active">
+      <section class="hero card">
+        <div class="hero-row">
+          <div>
+            <span class="eyebrow">STATUS</span>
+            <div class="status-title"><span id="statusDot" class="dot stopped"></span><strong id="monitorStatus">Parado</strong></div>
+          </div>
+          <div class="health-right"><span class="eyebrow">SAÚDE</span><strong id="healthStatus">Sem leitura</strong><span id="healthDetail" class="subtle">—</span></div>
+        </div>
+        <div class="actions primary-actions">
+          <button id="startBtn" class="primary">Iniciar</button>
+          <button id="stopBtn" class="secondary">Pausar</button>
+          <button id="testCaptureBtn" class="ghost">Ler agora</button>
+        </div>
+      </section>
+
+      <section class="metrics">
+        <article class="metric card"><span>Total</span><strong id="totalValue">—</strong></article>
+        <article class="metric card"><span>Itens visíveis</span><strong id="visibleValue">—</strong></article>
+        <article class="metric card"><span>Última leitura</span><strong id="lastCheck">—</strong></article>
+        <article class="metric card"><span>Próxima</span><strong id="nextCheck">—</strong></article>
+      </section>
+
+      <section class="card">
+        <div class="section-title"><div><h2>Canais</h2><p>Estado das notificações</p></div></div>
+        <div id="channelGrid" class="channel-grid"></div>
+      </section>
+
+      <section class="card compact-card">
+        <div class="section-title"><div><h2>Itens atuais</h2><p>Último estado capturado</p></div><button id="focusTabBtn" class="link-btn">Abrir fila</button></div>
+        <div id="itemsList" class="items empty">Nenhum estado salvo.</div>
+      </section>
+    </section>
+
+    <section id="tab-setup" class="tab-panel">
+      <section class="card step-card">
+        <span class="step">1</span>
+        <div class="step-content">
+          <h2>Fonte monitorada</h2>
+          <p>A extensão usa uma aba dedicada para atualizar a fila sem atrapalhar seu trabalho.</p>
+          <div id="boundTabBox" class="source-box"><strong id="boundTabText">Nenhuma aba dedicada</strong><span id="boundTabUrl">Abra a fila e crie a aba dedicada.</span></div>
+          <button id="createDedicatedBtn" class="primary full">Criar / substituir aba dedicada</button>
+        </div>
+      </section>
+
+      <section class="card step-card">
+        <span class="step">2</span>
+        <div class="step-content">
+          <h2>Elementos da fila</h2>
+          <p>Use a seleção visual. Ela funciona em DOM normal, iframes e Shadow DOM aberto.</p>
+
+          <div class="picker-card">
+            <div><strong>Contador</strong><span id="counterSummary">Ainda não selecionado</span></div>
+            <button id="pickCounterBtn" class="select-btn">Selecionar</button>
+          </div>
+
+          <div class="picker-card">
+            <div><strong>Itens / chamados</strong><span id="itemsSummary">Ainda não selecionado</span></div>
+            <button id="pickItemsBtn" class="select-btn">Selecionar</button>
+          </div>
+
+          <details class="advanced">
+            <summary>Configuração técnica</summary>
+            <label for="counterSelector">Seletor do contador</label>
+            <input id="counterSelector" type="text" placeholder="Selecionado automaticamente">
+            <label for="itemSelector">Seletor dos itens</label>
+            <input id="itemSelector" type="text" placeholder="Selecionado automaticamente">
+          </details>
+        </div>
+      </section>
+
+      <section class="card step-card">
+        <span class="step">3</span>
+        <div class="step-content">
+          <h2>Comportamento</h2>
+          <label for="monitorName">Nome local do monitor</label>
+          <input id="monitorName" type="text" value="Fila SOC N2">
+          <div class="inline-fields">
+            <div><label for="intervalMinutes">Verificar a cada</label><div class="suffix"><input id="intervalMinutes" type="number" min="1" max="1440" value="5"><span>min</span></div></div>
+          </div>
+          <label class="toggle"><input id="alertOnNewItem" type="checkbox" checked><span><strong>Novo item</strong><small>Alertar quando surgir um novo identificador.</small></span></label>
+          <label class="toggle"><input id="alertOnCountIncrease" type="checkbox" checked><span><strong>Aumento da fila</strong><small>Alertar quando o total aumentar.</small></span></label>
+          <button id="saveBtn" class="primary full">Salvar configuração</button>
+        </div>
+      </section>
+    </section>
+
+    <section id="tab-integrations" class="tab-panel">
+      <section class="card integration-card">
+        <div class="integration-head"><div class="integration-icon">🔔</div><div><h2>Desktop + som</h2><p>Alerta detalhado somente neste computador.</p></div></div>
+        <label class="toggle"><input id="notificationsEnabled" type="checkbox" checked><span><strong>Notificação do Chrome/Windows</strong></span></label>
+        <label class="toggle"><input id="soundEnabled" type="checkbox" checked><span><strong>Alerta sonoro</strong></span></label>
+        <button id="testAlertBtn" class="ghost full">Testar alerta local</button>
+      </section>
+
+      <section class="card integration-card">
+        <div class="integration-head"><div class="integration-icon">✈️</div><div><h2>Telegram</h2><p>Push remoto sanitizado para o celular.</p></div></div>
+        <div class="privacy">Nunca envia IDs, quantidade da fila, nome da fila, URL ou conteúdo do chamado.</div>
+        <label class="toggle"><input id="telegramEnabled" type="checkbox"><span><strong>Ativar Telegram</strong></span></label>
+        <label for="telegramBotToken">Token do bot</label>
+        <input id="telegramBotToken" type="password" placeholder="123456:ABC...">
+        <label for="telegramChatId">Chat ID</label>
+        <div class="field-action"><input id="telegramChatId" type="text" placeholder="Descobrir automaticamente"><button id="discoverChatBtn" class="small-btn">Buscar</button></div>
+        <div class="actions"><button id="saveTelegramBtn" class="secondary">Salvar</button><button id="testTelegramBtn" class="ghost">Testar</button></div>
+      </section>
+
+      <section class="card integration-card">
+        <div class="integration-head"><div class="integration-icon">⚡</div><div><h2>E-mail / Teams via Power Automate</h2><p>Dispara um webhook sanitizado para um fluxo externo.</p></div></div>
+        <div class="privacy">O payload contém apenas o tipo do evento e horário. O fluxo pode usar “Send an email (V2)” ou publicar no Teams.</div>
+        <label class="toggle"><input id="automationEnabled" type="checkbox"><span><strong>Ativar automação externa</strong></span></label>
+        <label for="automationWebhookUrl">URL do webhook do Power Automate</label>
+        <textarea id="automationWebhookUrl" rows="3" placeholder="https://..."></textarea>
+        <div class="actions"><button id="saveAutomationBtn" class="secondary">Salvar</button><button id="testAutomationBtn" class="ghost">Testar webhook</button></div>
+      </section>
+    </section>
+
+    <section id="tab-history" class="tab-panel">
+      <section class="card">
+        <div class="section-title"><div><h2>Histórico</h2><p>Alterações, saúde e entregas.</p></div><button id="clearHistoryBtn" class="link-btn danger-text">Limpar</button></div>
+        <div id="historyList" class="history empty">Nenhum evento registrado.</div>
+      </section>
+    </section>
+
+    <div id="toast" class="toast hidden"></div>
+  </main>
+  <script src="popup.js"></script>
+</body>
+</html>
