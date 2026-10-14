@@ -20,7 +20,8 @@ function harness() {
       setAccessLevel: async opts => { store.accessLevel = opts.accessLevel; },
       get: async keys => Object.fromEntries((keys == null ? Object.keys(store) : Array.isArray(keys) ? keys : [keys])
         .map(k => [k, structuredClone(store[k])])),
-      set: async values => { Object.assign(store, structuredClone(values)); }
+      set: async values => { Object.assign(store, structuredClone(values)); },
+      remove: async keys => { for (const key of Array.isArray(keys) ? keys : [keys]) delete store[key]; }
     } },
     alarms: { onAlarm: listen('alarm'), get: async n => alarms.get(n),
       clear: async n => alarms.delete(n), create: async (n, opts) => { alarms.set(n, opts); } },
@@ -34,7 +35,7 @@ function harness() {
     offscreen: { createDocument: async () => {} }
   };
   const context = vm.createContext({ console, URL, setTimeout, clearTimeout, AbortController, crypto, Date: ClockDate, chrome });
-  context.importScripts = filename => vm.runInContext(fs.readFileSync(path.join(root, filename), 'utf8'), context);
+  context.importScripts = (...filenames) => filenames.forEach(filename => vm.runInContext(fs.readFileSync(path.join(root, filename), 'utf8'), context));
   vm.runInContext(fs.readFileSync(path.join(root, 'background.js'), 'utf8'), context);
   const run = code => vm.runInContext(code, context);
   context.tick = ms => { clock += ms; };

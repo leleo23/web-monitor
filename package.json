@@ -1,6 +1,6 @@
 {
   "name": "web-monitor",
-  "version": "0.5.1",
+  "version": "0.6.0",
   "private": true,
   "description": "Development checks for the unpacked Chrome extension",
   "scripts": {
@@ -8,6 +8,10 @@
     "check": "node scripts/check.cjs",
     "test:browser": "node scripts/browser-smoke.cjs"
   },
-  "engines": { "node": ">=20" },
-  "devDependencies": { "playwright": "1.62.1" }
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
+  }
 }

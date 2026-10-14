@@ -7,6 +7,7 @@
     const oldSet = new Set(previous.items || []);
     const newSet = new Set(current.items || []);
     return {
+      valueChanged: typeof current.value === "string" && typeof previous.value === "string" && current.value !== previous.value,
       delta: Number.isSafeInteger(previous.total) && Number.isSafeInteger(current.total)
         ? current.total - previous.total : null,
       added: idsComparable ? [...newSet].filter((item) => !oldSet.has(item)) : [],
@@ -16,7 +17,8 @@
   }
 
   function shouldAlert(config, comparison) {
-    return (config.alertOnNewItem !== false && comparison.added.length > 0) ||
+    return (config.type === "visual" && comparison.valueChanged) ||
+      (config.alertOnNewItem !== false && comparison.added.length > 0) ||
       (config.alertOnCountIncrease !== false && comparison.delta > 0) ||
       (config.alertOnCountDecrease === true && comparison.delta < 0) ||
       (config.alertOnRemovedItem === true && comparison.removed.length > 0);
@@ -25,33 +27,39 @@
   function buildHistoryEvent(previous, current, comparison) {
     if (!previous) return {
       at: current.checkedAt, type: "baseline", severity: "info",
-      summary: `Baseline criado: total ${current.total ?? "—"}, ${current.items.length} item(ns).`
+      summary: typeof current.value === "string" ? "Baseline do elemento visual criado." : `Baseline criado: total ${current.total ?? "—"}, ${current.items.length} item(ns).`,
+      total: current.total
     };
-    if (!comparison.added.length && !comparison.removed.length && !comparison.delta) return null;
+    if (!comparison.added.length && !comparison.removed.length && !comparison.delta && !comparison.valueChanged) return null;
     const parts = [];
     if (comparison.delta) parts.push(`total ${previous.total}→${current.total} (${comparison.delta > 0 ? "+" : ""}${comparison.delta})`);
     if (comparison.added.length) parts.push(`+ ${comparison.added.join(", ")}`);
     if (comparison.removed.length) parts.push(`- ${comparison.removed.join(", ")}`);
+    if (comparison.valueChanged) parts.push("Conteúdo do elemento alterado");
     return {
       at: current.checkedAt, type: "change",
       severity: comparison.added.length || comparison.delta > 0 ? "attention" : "info",
       summary: parts.join(" • "), added: comparison.added, removed: comparison.removed,
-      delta: comparison.delta, idsComparable: comparison.idsComparable
+      delta: comparison.delta, idsComparable: comparison.idsComparable, valueChanged: Boolean(comparison.valueChanged),
+      total: current.total, previousTotal: previous.total
     };
   }
 
   function readingKey(config) {
-    return JSON.stringify([config.boundUrl || "", config.counterSelector || "", config.itemSelector || "",
-      config.counterLocator || null, config.itemLocator || null]);
+    const source = [config.boundUrl || "", config.counterSelector || "", config.itemSelector || "",
+      config.counterLocator || null, config.itemLocator || null];
+    if (config.type === "visual") source.push("visual", config.visualLocator || null);
+    return JSON.stringify(source);
   }
 
   function snapshotKey(snapshot) {
     return JSON.stringify([snapshot.total, [...snapshot.items].sort(), snapshot.frameUrl,
-      snapshot.counterFrameUrl, snapshot.itemFrameUrl, snapshot.coverage]);
+      snapshot.counterFrameUrl, snapshot.itemFrameUrl, snapshot.coverage, snapshot.value]);
   }
 
   function validateSnapshot(config, snapshot) {
     if (snapshot.readyState === "loading") return "PAGE_LOADING";
+    if (config.type === "visual") return snapshot.visualFound && typeof snapshot.value === "string" && snapshot.value.trim() ? null : "SELECTOR_FAILED";
     const counterRequired = Boolean(config.counterSelector || config.counterLocator);
     const itemsRequired = Boolean(config.itemSelector || config.itemLocator);
     if (!counterRequired && !itemsRequired) return "SELECTOR_FAILED";

@@ -1,4 +1,6 @@
-importScripts("src/core/detection.js");
+importScripts("src/core/detection.js", "src/core/storage.js", "src/core/insights.js", "src/core/sounds.js");
+const monitorStorage = createMonitorStorage(chrome.storage.local);
+const { dailyInsights, monitorStatus } = WebMonitorInsights;
 const { compareSnapshots, shouldAlert, buildHistoryEvent, readingKey, snapshotKey, validateSnapshot } = WebMonitorCore;
 
 const ALARM_NAME = "web-monitor-check";
@@ -29,13 +31,22 @@ function safeError(error) {
 
 async function initializeStorage() {
   await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  await monitorStorage.migrate();
+  for (const { id } of await monitorStorage.catalog()) {
+    await monitorStorage.set({ monitorReading: false }, id);
+  }
 }
 const storageReady = initializeStorage();
 storageReady.catch(() => {});
 
-async function updateMonitorConfig(patch) {
-  const { monitorConfig = {} } = await chrome.storage.local.get("monitorConfig");
-  const next = { ...monitorConfig, ...patch };
+async function updateMonitorConfig(patch, monitorId = patch.id) {
+  const { monitorConfig = {} } = await monitorStorage.get("monitorConfig", monitorId);
+  const next = { ...monitorConfig, ...patch, id: monitorId || await monitorStorage.active() };
+  next.type = next.type || "queue";
+  next.createdAt = next.createdAt || Date.now();
+  next.soundId = next.soundId || "pulse";
+  if (!["queue", "visual"].includes(next.type) || !Object.hasOwn(WebMonitorSounds, next.soundId)) throw new Error("Tipo de monitor ou som inválido.");
+  if (next.volume !== undefined && (!Number.isFinite(next.volume) || next.volume < 0 || next.volume > 1)) throw new Error("Volume inválido.");
   delete next.resetBaseline;
   for (const field of ["counter", "item"]) {
     if (Object.hasOwn(patch, `${field}Selector`) && patch[`${field}Selector`] !== monitorConfig[`${field}Selector`] &&
@@ -52,25 +63,26 @@ async function updateMonitorConfig(patch) {
   next.revision = (monitorConfig.revision || 0) + 1;
   const values = { monitorConfig: next, pickerSession: null };
   if (changed) Object.assign(values, { monitorSnapshot: null, monitorPendingSnapshot: null, monitorHealth: null, monitorLastError: null, monitorEffectError: null, lastSelection: null });
-  await chrome.storage.local.set(values);
-  if (next.enabled) await scheduleAlarm(next.intervalMinutes);
-  else await chrome.alarms.clear(ALARM_NAME);
+  await monitorStorage.set(values, next.id);
+  if (next.enabled) await scheduleAlarm(next.intervalMinutes, next.id);
+  else await chrome.alarms.clear(alarmName(next.id));
   return next;
 }
 
-function saveMonitorConfig(patch) {
-  return withStateUpdate(() => updateMonitorConfig(patch));
+function saveMonitorConfig(patch, monitorId = patch.id) {
+  return withStateUpdate(() => updateMonitorConfig(patch, monitorId));
 }
 
-let checking = false;
+const checking = new Set();
 
 chrome.runtime.onInstalled.addListener(restoreAlarm);
 chrome.runtime.onStartup.addListener(restoreAlarm);
 
 chrome.alarms.onAlarm.addListener(async (alarm) => {
-  if (alarm.name !== ALARM_NAME) return;
+  if (alarm.name !== ALARM_NAME && !alarm.name.startsWith(`${ALARM_NAME}:`)) return;
+  const monitorId = alarm.name === ALARM_NAME ? "legacy" : alarm.name.slice(ALARM_NAME.length + 1);
   try {
-    await runCheck({ source: "alarm", refresh: true });
+    await runCheck({ source: "alarm", refresh: true, monitorId });
   } catch {
     // runCheck persiste o erro e a saúde do monitor.
   }
@@ -95,55 +107,87 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 async function handleMessage(message) {
+  const monitorId = message.monitorId;
   switch (message?.type) {
-    case "GET_STATUS":
+    case "CREATE_MONITOR": {
+      const type = message.monitorType || "visual";
+      if (!["visual", "queue"].includes(type)) throw new Error("Tipo de monitor inválido.");
+      const config = { id: crypto.randomUUID(), type, name: type === "visual" ? "Novo monitor visual" : "Nova fila",
+        createdAt: Date.now(), enabled: false, intervalMinutes: 5, revision: 1, soundId: "pulse", volume: 0.7 };
+      await withStateUpdate(() => monitorStorage.create(config));
+      return { ok: true, config };
+    }
+    case "SELECT_MONITOR":
+      await withStateUpdate(() => monitorStorage.select(monitorId));
+      return { ok: true, ...(await getStatus(monitorId)) };
+    case "DELETE_MONITOR":
+      await withStateUpdate(async () => {
+        await chrome.alarms.clear(alarmName(monitorId));
+        await monitorStorage.remove(monitorId);
+      });
+      await updateBadge();
       return { ok: true, ...(await getStatus()) };
+    case "PREVIEW_SELECTION":
+      return previewVisualSelection(monitorId);
+    case "CONFIRM_SELECTION":
+      return confirmVisualSelection(monitorId, message.previewToken);
+    case "DISCARD_SELECTION":
+      await withStateUpdate(() => monitorStorage.set({ monitorSelectionDraft: null }, monitorId));
+      return { ok: true };
+    case "PREVIEW_SOUND": {
+      if (!Object.hasOwn(WebMonitorSounds, message.soundId)) throw new Error("Som inválido.");
+      if (message.volume !== undefined && (!Number.isFinite(message.volume) || message.volume < 0 || message.volume > 1)) throw new Error("Volume inválido.");
+      await playSound({ soundId: message.soundId, volume: message.volume ?? 0.7 });
+      return { ok: true };
+    }
+    case "GET_STATUS":
+      return { ok: true, ...(await getStatus(monitorId)) };
 
     case "SAVE_CONFIG": {
       if (!message.config || typeof message.config !== "object" || Array.isArray(message.config)) throw new Error("Configuração inválida.");
-      const next = await saveMonitorConfig(message.config);
+      const next = await saveMonitorConfig(message.config, monitorId);
       return { ok: true, config: next };
     }
 
     case "START_MONITORING": {
-      const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+      const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
       if (!monitorConfig?.boundUrl) throw new Error("Crie uma aba dedicada antes de iniciar.");
-      if (!monitorConfig.counterSelector && !monitorConfig.counterLocator) throw new Error("Selecione um contador para distinguir uma fila vazia de uma falha de leitura.");
-      await saveMonitorConfig({ enabled: true });
-      const result = await runCheck({ source: "start", refresh: false });
+      if (monitorConfig.type === "visual" ? !monitorConfig.visualLocator : !monitorConfig.counterSelector && !monitorConfig.counterLocator) throw new Error("Selecione e confirme o elemento ou contador antes de iniciar.");
+      await saveMonitorConfig({ enabled: true }, monitorId);
+      const result = await runCheck({ source: "start", refresh: false, monitorId });
       return { ok: true, result };
     }
 
     case "STOP_MONITORING": {
-      await saveMonitorConfig({ enabled: false });
-      await chrome.action.setBadgeText({ text: "" });
+      await saveMonitorConfig({ enabled: false }, monitorId);
+      await updateBadge();
       return { ok: true };
     }
 
     case "CHECK_NOW":
-      return { ok: true, result: await runCheck({ source: "manual", refresh: Boolean(message.refresh) }) };
+      return { ok: true, result: await runCheck({ source: "manual", refresh: Boolean(message.refresh), monitorId }) };
 
     case "TEST_ALERT":
-      return await testLocalAlert();
+      return await testLocalAlert(monitorId);
 
     case "BEGIN_ELEMENT_PICKER":
-      return await beginElementPicker(message.selectionType);
+      return await beginElementPicker(message.selectionType, monitorId);
 
     case "TEST_TELEGRAM":
-      return await testTelegram();
+      return await testTelegram(monitorId);
 
     case "DISCOVER_TELEGRAM_CHAT":
-      return await discoverTelegramChat();
+      return await discoverTelegramChat(monitorId);
 
     case "TEST_AUTOMATION":
-      return await testAutomationWebhook();
+      return await testAutomationWebhook(monitorId);
 
     case "FOCUS_MONITOR_TAB":
-      await focusDedicatedTab();
+      await focusDedicatedTab(monitorId);
       return { ok: true };
 
     case "CLEAR_HISTORY":
-      await withStateUpdate(() => chrome.storage.local.set({ monitorHistory: [] }));
+      await withStateUpdate(() => monitorStorage.set({ monitorHistory: [] }, monitorId));
       return { ok: true };
 
     default:
@@ -151,36 +195,51 @@ async function handleMessage(message) {
   }
 }
 
+function alarmName(id) { return `${ALARM_NAME}:${id}`; }
+
 async function restoreAlarm() {
   await storageReady;
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
-  if (monitorConfig?.enabled) await scheduleAlarm(monitorConfig.intervalMinutes || 5);
-  else await chrome.alarms.clear(ALARM_NAME);
-}
-
-async function scheduleAlarm(intervalMinutes) {
-  const interval = Math.max(1, Number(intervalMinutes) || 5);
   await chrome.alarms.clear(ALARM_NAME);
-  await chrome.alarms.create(ALARM_NAME, { periodInMinutes: interval });
+  for (const { id } of await monitorStorage.catalog()) {
+    const { monitorConfig } = await monitorStorage.get("monitorConfig", id);
+    if (monitorConfig?.enabled) await scheduleAlarm(monitorConfig.intervalMinutes || 5, id);
+    else await chrome.alarms.clear(alarmName(id));
+  }
 }
 
-async function getStatus() {
-  const data = await chrome.storage.local.get([
-    "monitorConfig", "monitorSnapshot", "monitorHistory", "monitorLastError",
-    "monitorHealth", "lastSelection", "channelStatus", "monitorPendingSnapshot", "monitorEffectError"
-  ]);
-  const alarm = await chrome.alarms.get(ALARM_NAME);
+async function scheduleAlarm(intervalMinutes, id) {
+  id = id || await monitorStorage.active();
+  const interval = Math.max(1, Number(intervalMinutes) || 5);
+  await chrome.alarms.clear(alarmName(id));
+  await chrome.alarms.create(alarmName(id), { periodInMinutes: interval });
+}
+
+async function getStatus(monitorId) {
+  monitorId = monitorId || await monitorStorage.active();
+  const data = await monitorStorage.get([
+    "monitorConfig", "monitorSnapshot", "monitorHistory", "monitorLastError", "monitorHealth", "lastSelection",
+    "channelStatus", "monitorPendingSnapshot", "monitorEffectError", "monitorSamples", "monitorSelectionDraft", "monitorReading"
+  ], monitorId);
+  const alarm = await chrome.alarms.get(alarmName(monitorId));
+  const monitors = [];
+  for (const { id } of await monitorStorage.catalog()) {
+    const state = id === monitorId ? data : await monitorStorage.get([
+      "monitorConfig", "monitorSnapshot", "monitorHistory", "monitorHealth", "monitorPendingSnapshot", "monitorSamples", "monitorReading"
+    ], id);
+    const config = state.monitorConfig || {};
+    monitors.push({ id, name: config.name || "Monitor", type: config.type || "queue", enabled: Boolean(config.enabled),
+      status: monitorStatus(config, state.monitorHealth, state.monitorPendingSnapshot, checking.has(id) || state.monitorReading),
+      snapshot: state.monitorSnapshot || null,
+      insights: dailyInsights(state.monitorSnapshot, state.monitorHistory, state.monitorSamples),
+      activity: (state.monitorHistory || []).filter(event => event.type === "change").slice(0, 5) });
+  }
   return {
-    config: data.monitorConfig || null,
-    snapshot: data.monitorSnapshot || null,
-    history: data.monitorHistory || [],
-    lastError: data.monitorLastError || null,
-    health: data.monitorHealth || null,
-    pending: Boolean(data.monitorPendingSnapshot),
-    effectError: data.monitorEffectError || null,
-    lastSelection: data.lastSelection || null,
-    channelStatus: normalizeChannelStatus(data.channelStatus),
-    nextCheckAt: alarm?.scheduledTime || null
+    config: data.monitorConfig || null, snapshot: data.monitorSnapshot || null, history: data.monitorHistory || [],
+    lastError: data.monitorLastError || null, health: data.monitorHealth || null,
+    pending: Boolean(data.monitorPendingSnapshot), effectError: data.monitorEffectError || null,
+    lastSelection: data.lastSelection || null, selectionDraft: data.monitorSelectionDraft || null,
+    channelStatus: normalizeChannelStatus(data.channelStatus), nextCheckAt: alarm?.scheduledTime || null,
+    monitors, insights: dailyInsights(data.monitorSnapshot, data.monitorHistory, data.monitorSamples)
   };
 }
 
@@ -195,27 +254,30 @@ function normalizeChannelStatus(value) {
 }
 
 async function checkStillCurrent(config, source) {
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", config.id);
   return monitorConfig && monitorConfig.revision === config.revision && readingKey(monitorConfig) === readingKey(config) &&
     (source === "manual" || monitorConfig.enabled === true);
 }
 
-async function recordEffectError(error) {
-  await withStateUpdate(() => chrome.storage.local.set({ monitorEffectError: { message: safeError(error), at: Date.now() } }));
+async function recordEffectError(error, monitorId) {
+  await withStateUpdate(() => monitorStorage.set({ monitorEffectError: { message: safeError(error), at: Date.now() } }, monitorId));
 }
 
-async function runCheck({ source = "manual", refresh = false } = {}) {
+async function runCheck({ source = "manual", refresh = false, monitorId } = {}) {
   await storageReady;
-  if (checking) return { skipped: true, reason: "Uma verificação já está em andamento." };
-  checking = true;
+  monitorId = monitorId || await monitorStorage.active();
+  if (!(await monitorStorage.catalog()).some(entry => entry.id === monitorId)) return { skipped: true, reason: "Monitor removido." };
+  if (checking.has(monitorId)) return { skipped: true, reason: "Uma verificação já está em andamento." };
+  checking.add(monitorId);
   let config;
   let committed = false;
   try {
-    const data = await chrome.storage.local.get("monitorConfig");
+    const data = await monitorStorage.get("monitorConfig", monitorId);
     config = data.monitorConfig;
     if (!config) throw readError("SELECTOR_FAILED", "Nenhuma configuração foi salva.");
     if (source !== "manual" && !config.enabled) return { skipped: true, reason: "Monitor pausado." };
-    if (source !== "manual" && !config.counterSelector && !config.counterLocator) throw readError("SELECTOR_FAILED", "Selecione um contador para validar a leitura da fila.");
+    if (source !== "manual" && config.type !== "visual" && !config.counterSelector && !config.counterLocator) throw readError("SELECTOR_FAILED", "Selecione um contador para validar a leitura da fila.");
+    await withStateUpdate(() => monitorStorage.set({ monitorReading: true }, monitorId));
     const tab = await ensureDedicatedTabReady(config, { refresh });
     if (!tab) throw readError("UNSUPPORTED_PAGE", "A aba dedicada não pôde ser preparada.");
     const snapshot = await captureWithRetry(tab.id, config);
@@ -225,21 +287,22 @@ async function runCheck({ source = "manual", refresh = false } = {}) {
 
     const result = await withStateUpdate(async () => {
       if (!(await checkStillCurrent(config, source))) return { skipped: true, reason: "Monitor pausado ou configuração alterada durante a leitura." };
-      const { monitorSnapshot, monitorPendingSnapshot } = await chrome.storage.local.get(["monitorSnapshot", "monitorPendingSnapshot"]);
+      const { monitorSnapshot, monitorPendingSnapshot, monitorSamples = [] } = await monitorStorage.get(["monitorSnapshot", "monitorPendingSnapshot", "monitorSamples"], monitorId);
       // Old v0.5 snapshots lack provenance: create one safe baseline on upgrade.
       const previous = monitorSnapshot?.readingKey === snapshot.readingKey ? monitorSnapshot : null;
       if (snapshot.total === 0 && previous?.total > 0) {
         if (!monitorPendingSnapshot || monitorPendingSnapshot.readingKey !== snapshot.readingKey ||
             snapshotKey(monitorPendingSnapshot) !== snapshotKey(snapshot) || snapshot.checkedAt - monitorPendingSnapshot.checkedAt < 5000) {
-          await chrome.storage.local.set({ monitorPendingSnapshot: snapshot, monitorLastError: null });
+          await monitorStorage.set({ monitorPendingSnapshot: snapshot, monitorLastError: null }, monitorId);
           return { pending: true, reason: "Fila vazia aguardando confirmação em outra leitura. A última leitura válida foi preservada." };
         }
       }
       const comparison = compareSnapshots(previous, snapshot);
-      await chrome.storage.local.set({
+      await monitorStorage.set({
         monitorSnapshot: snapshot, monitorPendingSnapshot: null, monitorLastError: null, monitorEffectError: null,
-        monitorConfig: { ...config, tabId: tab.id }
-      });
+        monitorConfig: { ...config, tabId: tab.id },
+        monitorSamples: [...monitorSamples, { at: snapshot.checkedAt, total: snapshot.total }].slice(-288)
+      }, monitorId);
       return { snapshot, comparison, baselineCreated: !previous, previous };
     });
     if (result.skipped || result.pending) return result;
@@ -248,27 +311,32 @@ async function runCheck({ source = "manual", refresh = false } = {}) {
     for (const effect of [
       () => markHealthSuccess(config, snapshot.total === 0 ? "NO_ITEMS" : "OK", source !== "manual"),
       () => updateBadge(snapshot.total),
-      () => { const event = buildHistoryEvent(result.previous, snapshot, result.comparison); return event ? appendHistory(event) : undefined; }
+      () => { const event = buildHistoryEvent(result.previous, snapshot, result.comparison); return event ? appendHistory(event, monitorId) : undefined; }
     ]) {
       if (!(await checkStillCurrent(config, source))) break;
-      try { await effect(); } catch (error) { await recordEffectError(error); }
+      try { await effect(); } catch (error) { await recordEffectError(error, monitorId); }
     }
     if (source !== "manual" && result.previous && shouldAlert(config, result.comparison) && await checkStillCurrent(config, source)) {
       try { await dispatchChangeAlert(config, result.previous, snapshot, result.comparison); }
-      catch (error) { await recordEffectError(error); }
+      catch (error) { await recordEffectError(error, monitorId); }
     }
     const { previous, ...publicResult } = result;
     return publicResult;
   } catch (error) {
-    if (committed) { await recordEffectError(error); return { effectError: safeError(error) }; }
+    if (committed) { await recordEffectError(error, monitorId); return { effectError: safeError(error) }; }
     if (config && !(await checkStillCurrent(config, source))) return { skipped: true, reason: "Configuração alterada durante a leitura." };
     const lastError = { message: safeError(error), code: error.code || "READ_ERROR", at: Date.now() };
-    await withStateUpdate(() => chrome.storage.local.set({ monitorLastError: lastError, monitorPendingSnapshot: null }));
-    try { await chrome.action.setBadgeText({ text: "!" }); } catch (effectError) { await recordEffectError(effectError); }
+    await withStateUpdate(() => monitorStorage.set({ monitorLastError: lastError, monitorPendingSnapshot: null }, monitorId));
+    try { await chrome.action.setBadgeText({ text: "!" }); } catch (effectError) { await recordEffectError(effectError, monitorId); }
     try { await markHealthFailure(config || {}, lastError.message, lastError.code, source !== "manual"); }
-    catch (effectError) { await recordEffectError(effectError); }
+    catch (effectError) { await recordEffectError(effectError, monitorId); }
     throw error;
-  } finally { checking = false; }
+  } finally {
+    checking.delete(monitorId);
+    await withStateUpdate(async () => {
+      if ((await monitorStorage.catalog()).some(entry => entry.id === monitorId)) await monitorStorage.set({ monitorReading: false }, monitorId);
+    });
+  }
 }
 
 async function resolveDedicatedTab(config) {
@@ -333,8 +401,8 @@ async function ensureDedicatedTabReady(config, { refresh = false } = {}) {
   return tab;
 }
 
-async function focusDedicatedTab() {
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+async function focusDedicatedTab(monitorId) {
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
   const tab = await resolveDedicatedTab(monitorConfig || {});
   if (!tab) return;
   await chrome.windows.update(tab.windowId, { focused: true });
@@ -423,11 +491,12 @@ async function captureWithRetry(tabId, config) {
 async function captureAllFrames(tabId, config) {
   const frameResults = await executeInFramesBestEffort(tabId, captureFrameState, [{
     counterSelector: config.counterSelector || "", itemSelector: config.itemSelector || "",
-    counterLocator: config.counterLocator || null, itemLocator: config.itemLocator || null
+    counterLocator: config.counterLocator || null, itemLocator: config.itemLocator || null,
+    type: config.type, visualLocator: config.visualLocator || null
   }]);
   const results = frameResults.filter((entry) => entry.ok && entry.result)
     .map((entry) => ({ frameId: entry.frameId, ...entry.result }));
-  const counterUrl = config.counterLocator?.frameUrl;
+  const counterUrl = config.type === "visual" ? config.visualLocator?.frameUrl : config.counterLocator?.frameUrl;
   const itemUrl = config.itemLocator?.frameUrl;
   let candidates;
   // Cross-frame composition is allowed only when the user explicitly selected both sources.
@@ -448,9 +517,10 @@ async function captureAllFrames(tabId, config) {
   const selected = valid[0];
   return { foundSomething: true, snapshot: {
     total: selected.total, counterText: selected.counterText, items: selected.items,
+    ...(config.type === "visual" ? { value: selected.value } : {}),
     frameUrl: selected.href, counterFrameUrl: selected.counterFrameUrl || selected.href,
     itemFrameUrl: selected.itemFrameUrl || selected.href,
-    coverage: Number.isSafeInteger(selected.total) && selected.total === selected.items.length ? "full" : "visible"
+    coverage: config.type === "visual" ? "element" : Number.isSafeInteger(selected.total) && selected.total === selected.items.length ? "full" : "visible"
   } };
 }
 
@@ -508,12 +578,13 @@ function captureFrameState(config) {
         root = host.shadowRoot;
       }
       if (valid) {
-        try {
-          const matches = all
-            ? [...root.querySelectorAll(locator.targetSelector)]
-            : [root.querySelector(locator.targetSelector)].filter(Boolean);
-          if (matches.length) return matches;
-        } catch {}
+        const selectors = [locator.targetSelector, ...(locator.fallbacks || [])];
+        for (const selector of selectors) {
+          try {
+            const matches = [...root.querySelectorAll(selector)].filter(element => !locator.elementTag || element.tagName.toLowerCase() === locator.elementTag);
+            if ((all && matches.length) || (!all && matches.length === 1)) return all ? matches : [matches[0]];
+          } catch { selectorFailed = true; }
+        }
       }
     }
 
@@ -566,6 +637,15 @@ function captureFrameState(config) {
     return "";
   }
 
+  if (config.type === "visual") {
+    const element = resolveLocator(config.visualLocator, "", false)[0];
+    const blocked = element?.matches('input[type="password"], input[type="hidden"]');
+    const busy = element?.closest('[aria-busy="true"]');
+    const raw = element && !blocked ? String(element.value ?? element.textContent ?? "").replace(/\s+/g, " ").trim() : "";
+    return { visualFound: Boolean(element) && !blocked && !selectorFailed && raw.length <= 10000,
+      value: raw, total: parseCounter(raw), items: [], invalidItems: 0, counterFound: false,
+      readyState: busy ? "loading" : document.readyState, href: location.href };
+  }
   const counterElements = resolveLocator(config.counterLocator, config.counterSelector, false);
   const itemElements = resolveLocator(config.itemLocator, config.itemSelector, true);
 
@@ -600,7 +680,7 @@ async function dispatchChannels(config, details) {
   const delivery = {};
   const providers = [
     ["local", config.notificationsEnabled !== false, () => showNotification(details)],
-    ["sound", details.sound && config.soundEnabled !== false, playSound],
+    ["sound", details.sound && config.soundEnabled !== false, () => playSound(config)],
     ["telegram", config.telegramEnabled === true, () => sendTelegramMessage(config, sanitizedText(details.kind, details.timestamp))],
     ["automation", config.automationEnabled === true, () => sendAutomationWebhook(config, details.event, details.timestamp)]
   ];
@@ -608,8 +688,8 @@ async function dispatchChannels(config, details) {
     delivery[channel] = "disabled";
     if (!enabled) return;
     if (!(await checkStillCurrent(config, "alarm"))) { delivery[channel] = "cancelled"; return; }
-    try { await send(); delivery[channel] = "sent"; await setChannelSuccess(channel); }
-    catch (error) { delivery[channel] = "error"; await setChannelError(channel, safeError(error)); }
+    try { await send(); delivery[channel] = "sent"; await setChannelSuccess(channel, config.id); }
+    catch (error) { delivery[channel] = "error"; await setChannelError(channel, safeError(error), config.id); }
   }));
   return delivery;
 }
@@ -621,11 +701,12 @@ async function dispatchChangeAlert(config, previous, current, comparison) {
   });
   await appendHistory({ at: current.checkedAt, type: "notification",
     severity: Object.values(delivery).includes("error") ? "warning" : "info",
-    summary: `Resultado dos alertas • ${deliverySummary(delivery)}`, delivery });
+    summary: `Resultado dos alertas • ${deliverySummary(delivery)}`, delivery }, config.id);
 }
 
 function buildLocalTitle(config, comparison) {
   const name = config.name || "Monitor";
+  if (comparison.valueChanged) return `${name} — conteúdo alterado`;
   if (comparison.added.length === 1) return `${name} — novo item detectado`;
   if (comparison.added.length > 1) return `${name} — ${comparison.added.length} novos itens`;
   if (comparison.delta > 0) return `${name} — fila aumentou`;
@@ -634,6 +715,7 @@ function buildLocalTitle(config, comparison) {
 
 function buildLocalMessage(previous, current, comparison) {
   const parts = [];
+  if (comparison.valueChanged) parts.push("O conteúdo do elemento monitorado mudou.");
   if (comparison.added.length) {
     const ids = comparison.added.slice(0, 5).map((id) => `#${id}`).join(", ");
     parts.push(`Novo(s): ${ids}${comparison.added.length > 5 ? ` +${comparison.added.length - 5}` : ""}`);
@@ -661,15 +743,18 @@ function sanitizedText(kind, timestamp) {
   return `🚨 Web Monitor\n\nFoi detectada uma alteração na fila monitorada.\nVerifique o ambiente corporativo.\n\nHorário: ${formatTimeOnly(timestamp)}`;
 }
 
-async function appendHistory(event) {
+async function appendHistory(event, monitorId) {
   await withStateUpdate(async () => {
-    const { monitorHistory = [] } = await chrome.storage.local.get("monitorHistory");
-    await chrome.storage.local.set({ monitorHistory: [event, ...monitorHistory].slice(0, MAX_HISTORY) });
+    const { monitorHistory = [] } = await monitorStorage.get("monitorHistory", monitorId);
+    await monitorStorage.set({ monitorHistory: [event, ...monitorHistory].slice(0, MAX_HISTORY) }, monitorId);
   });
 }
 
 async function updateBadge(total) {
-  const text = typeof total === "number" ? (total > 999 ? "999+" : String(total)) : "";
+  const status = await getStatus();
+  const active = status.monitors.filter(m => m.enabled);
+  total = active.reduce((sum, m) => sum + (m.snapshot?.total || 0), 0);
+  const text = active.length ? (total > 999 ? "999+" : String(total)) : "";
   await chrome.action.setBadgeText({ text });
 }
 
@@ -677,15 +762,15 @@ async function showNotification({ title, message }) {
   await chrome.notifications.create({ type: "basic", iconUrl: chrome.runtime.getURL("icon128.png"), title, message, priority: 2 });
 }
 
-async function testLocalAlert() {
+async function testLocalAlert(monitorId) {
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
   try {
     await showNotification({ title: "Web Monitor — teste local", message: "Notificação local funcionando corretamente." });
-    await setChannelSuccess("local");
-  } catch (error) { await setChannelError("local", safeError(error)); throw error; }
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+    await setChannelSuccess("local", monitorId);
+  } catch (error) { await setChannelError("local", safeError(error), monitorId); throw error; }
   if (monitorConfig?.soundEnabled !== false) {
-    try { await playSound(); await setChannelSuccess("sound"); }
-    catch (error) { await setChannelError("sound", safeError(error)); throw new Error("Notificação Desktop enviada, mas o áudio falhou."); }
+    try { await playSound(monitorConfig || {}); await setChannelSuccess("sound", monitorId); }
+    catch (error) { await setChannelError("sound", safeError(error), monitorId); throw new Error("Notificação Desktop enviada, mas o áudio falhou."); }
   }
   return { ok: true };
 }
@@ -700,43 +785,43 @@ async function ensureOffscreenDocument() {
   try { await offscreenCreation; } finally { offscreenCreation = null; }
 }
 
-async function playSound() {
+async function playSound(config = {}) {
   await ensureOffscreenDocument();
-  const response = await chrome.runtime.sendMessage({ type: "PLAY_SOUND" });
+  const response = await chrome.runtime.sendMessage({ type: "PLAY_SOUND", soundId: config.soundId || "pulse", volume: config.volume ?? 0.7 });
   if (!response?.ok) throw new Error("Não foi possível reproduzir o alerta sonoro.");
 }
 
 async function markHealthSuccess(config, code = "OK", notify = true) {
   const wasError = await withStateUpdate(async () => {
     if (!(await checkStillCurrent(config, "manual"))) return false;
-    const { monitorHealth } = await chrome.storage.local.get("monitorHealth");
-    await chrome.storage.local.set({ monitorHealth: {
+    const { monitorHealth } = await monitorStorage.get("monitorHealth", config.id);
+    await monitorStorage.set({ monitorHealth: {
       status: "healthy", code, consecutiveFailures: 0, lastSuccessAt: Date.now(),
       lastErrorAt: monitorHealth?.lastErrorAt || null, lastError: null
-    } });
+    } }, config.id);
     return monitorHealth?.status === "error";
   });
   if (!wasError || !notify) return;
   const delivery = await dispatchHealthChannels(config, "recovery");
   await appendHistory({ at: Date.now(), type: "health-recovery", severity: "info",
-    summary: `Monitor recuperado • ${deliverySummary(delivery)}`, delivery });
+    summary: `Monitor recuperado • ${deliverySummary(delivery)}`, delivery }, config.id);
 }
 
 async function markHealthFailure(config, errorMessage, code = "READ_ERROR", notify = true) {
   const transition = await withStateUpdate(async () => {
     if (!(await checkStillCurrent(config, "manual"))) return { becameError: false };
-    const { monitorHealth } = await chrome.storage.local.get("monitorHealth");
+    const { monitorHealth } = await monitorStorage.get("monitorHealth", config.id);
     const failures = (monitorHealth?.consecutiveFailures || 0) + 1;
     const status = failures >= HEALTH_FAILURE_THRESHOLD ? "error" : "warning";
     const next = { status, code, consecutiveFailures: failures,
       lastSuccessAt: monitorHealth?.lastSuccessAt || null, lastErrorAt: Date.now(), lastError: safeError(errorMessage) };
-    await chrome.storage.local.set({ monitorHealth: next });
+    await monitorStorage.set({ monitorHealth: next }, config.id);
     return { ...next, becameError: status === "error" && monitorHealth?.status !== "error" };
   });
   if (!transition.becameError || !notify) return;
   const delivery = await dispatchHealthChannels(config, "health_error", transition.consecutiveFailures, transition.lastSuccessAt);
   await appendHistory({ at: Date.now(), type: "health-error", severity: "critical",
-    summary: `Monitor com problema após ${transition.consecutiveFailures} falhas • ${deliverySummary(delivery)}`, delivery });
+    summary: `Monitor com problema após ${transition.consecutiveFailures} falhas • ${deliverySummary(delivery)}`, delivery }, config.id);
 }
 
 async function dispatchHealthChannels(config, kind, failures = 0, lastSuccessAt = null) {
@@ -749,21 +834,21 @@ async function dispatchHealthChannels(config, kind, failures = 0, lastSuccessAt 
   });
 }
 
-async function updateChannel(channel, patch) {
+async function updateChannel(channel, patch, monitorId) {
   await withStateUpdate(async () => {
-    const { channelStatus } = await chrome.storage.local.get("channelStatus");
+    const { channelStatus } = await monitorStorage.get("channelStatus", monitorId);
     const value = normalizeChannelStatus(channelStatus);
     value[channel] = { ...value[channel], ...patch };
-    await chrome.storage.local.set({ channelStatus: value });
+    await monitorStorage.set({ channelStatus: value }, monitorId);
   });
 }
 
-async function setChannelSuccess(channel) {
-  await updateChannel(channel, { status: channel === "local" ? "ready" : "connected", lastSuccessAt: Date.now(), lastError: null });
+async function setChannelSuccess(channel, monitorId) {
+  await updateChannel(channel, { status: channel === "local" ? "ready" : "connected", lastSuccessAt: Date.now(), lastError: null }, monitorId);
 }
 
-async function setChannelError(channel, message) {
-  await updateChannel(channel, { status: "error", lastErrorAt: Date.now(), lastError: safeError(message) });
+async function setChannelError(channel, message, monitorId) {
+  await updateChannel(channel, { status: "error", lastErrorAt: Date.now(), lastError: safeError(message) }, monitorId);
 }
 
 async function fetchRemote(url, options = {}) {
@@ -803,23 +888,23 @@ async function sendTelegramMessage(config, text) {
   return data;
 }
 
-async function testTelegram() {
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+async function testTelegram(monitorId) {
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
   if (!monitorConfig?.telegramBotToken) throw new Error("Informe o token do bot primeiro.");
   if (!monitorConfig?.telegramChatId) throw new Error("Informe ou descubra o Chat ID primeiro.");
   try {
     await sendTelegramMessage(monitorConfig, sanitizedText("test", Date.now()));
-    await setChannelSuccess("telegram");
-    await appendHistory({ at: Date.now(), type: "telegram-test", severity: "info", summary: "Teste do Telegram enviado com sucesso." });
+    await setChannelSuccess("telegram", monitorId);
+    await appendHistory({ at: Date.now(), type: "telegram-test", severity: "info", summary: "Teste do Telegram enviado com sucesso." }, monitorId);
     return { ok: true };
   } catch (error) {
-    await setChannelError("telegram", error.message);
+    await setChannelError("telegram", error.message, monitorId);
     throw error;
   }
 }
 
-async function discoverTelegramChat() {
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+async function discoverTelegramChat(monitorId) {
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
   const token = String(monitorConfig?.telegramBotToken || "").trim();
   if (!token) throw new Error("Informe o token do bot primeiro.");
   await ensureRemotePermission("https://api.telegram.org/*");
@@ -842,7 +927,7 @@ async function discoverTelegramChat() {
       chatName: chat.title || chat.username || [chat.first_name, chat.last_name].filter(Boolean).join(" ") || "Conversa"
     };
   } catch (error) {
-    await setChannelError("telegram", error.message);
+    await setChannelError("telegram", error.message, monitorId);
     throw error;
   }
 }
@@ -871,24 +956,24 @@ async function sendAutomationWebhook(config, event, timestamp) {
   return true;
 }
 
-async function testAutomationWebhook() {
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+async function testAutomationWebhook(monitorId) {
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
   if (!monitorConfig?.automationWebhookUrl) throw new Error("Informe a URL do webhook primeiro.");
   try {
     await sendAutomationWebhook(monitorConfig, "test", Date.now());
-    await setChannelSuccess("automation");
-    await appendHistory({ at: Date.now(), type: "automation-test", severity: "info", summary: "Teste da automação enviado com sucesso." });
+    await setChannelSuccess("automation", monitorId);
+    await appendHistory({ at: Date.now(), type: "automation-test", severity: "info", summary: "Teste da automação enviado com sucesso." }, monitorId);
     return { ok: true };
   } catch (error) {
-    await setChannelError("automation", error.message);
+    await setChannelError("automation", error.message, monitorId);
     throw error;
   }
 }
 
-async function beginElementPicker(selectionType) {
-  if (!["counter", "items"].includes(selectionType)) throw new Error("Tipo de seleção inválido.");
+async function beginElementPicker(selectionType, monitorId) {
+  if (!["counter", "items", "visual"].includes(selectionType)) throw new Error("Tipo de seleção inválido.");
 
-  const { monitorConfig } = await chrome.storage.local.get("monitorConfig");
+  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
   if (!monitorConfig?.boundUrl) throw new Error("Crie primeiro a aba dedicada.");
 
   const tab = await ensureDedicatedTabReady(monitorConfig, { refresh: false });
@@ -897,14 +982,14 @@ async function beginElementPicker(selectionType) {
   // Primeiro remove pickers antigos sem usar allFrames. Falhas em um frame não derrubam os demais.
   await executeInFramesBestEffort(tab.id, cleanupPicker, []);
   const session = await withStateUpdate(async () => {
-    const { monitorConfig: latest } = await chrome.storage.local.get("monitorConfig");
+    const { monitorConfig: latest } = await monitorStorage.get("monitorConfig", monitorId);
     if (latest?.revision !== monitorConfig.revision) throw new Error("A configuração mudou. Abra o seletor novamente.");
-    const current = tab.id === latest.tabId ? latest : await updateMonitorConfig({ tabId: tab.id });
+    const current = tab.id === latest.tabId ? latest : await updateMonitorConfig({ tabId: tab.id }, monitorId);
     const value = { id: crypto.randomUUID(), selectionType, tabId: tab.id, revision: current.revision, at: Date.now() };
-    await chrome.storage.local.set({ pickerSession: value });
+    await monitorStorage.set({ pickerSession: value }, monitorId);
     return value;
   });
-  const injections = await executeInFramesBestEffort(tab.id, installPicker, [selectionType, session.id]);
+  const injections = await executeInFramesBestEffort(tab.id, installPicker, [selectionType, session.id, monitorConfig.id]);
   const successCount = injections.filter((entry) => entry.ok).length;
 
   if (!successCount) {
@@ -919,7 +1004,7 @@ async function beginElementPicker(selectionType) {
 
 async function handleElementSelected(message, sender) {
   await withStateUpdate(async () => {
-    const { monitorConfig, pickerSession } = await chrome.storage.local.get(["monitorConfig", "pickerSession"]);
+    const { monitorConfig, pickerSession } = await monitorStorage.get(["monitorConfig", "pickerSession"], message.monitorId);
     if (!monitorConfig || !pickerSession || sender.tab?.id !== pickerSession.tabId ||
         message.sessionId !== pickerSession.id || message.selectionType !== pickerSession.selectionType ||
         pickerSession.revision !== monitorConfig.revision || Date.now() - pickerSession.at > 120000 ||
@@ -930,19 +1015,63 @@ async function handleElementSelected(message, sender) {
         typeof locator.targetSelector !== "string" || !locator.targetSelector || locator.targetSelector.length > 2000) {
       throw new Error("Seletor inválido.");
     }
+    if (message.selectionType === "visual") {
+      if (monitorConfig.type !== "visual") throw new Error("Este monitor não está no modo visual.");
+      await monitorStorage.set({ pickerSession: null, monitorSelectionDraft: {
+        id: crypto.randomUUID(), locator: { ...locator, frameUrl: sender.url },
+        preview: String(message.sampleText || "").slice(0, 240), revision: monitorConfig.revision,
+        at: Date.now(), tabId: sender.tab.id
+      } }, message.monitorId);
+      return;
+    }
     const field = message.selectionType === "counter" ? "counter" : "item";
     await updateMonitorConfig({ [`${field}Selector`]: locator.targetSelector,
-      [`${field}Locator`]: { ...locator, frameUrl: sender.url } });
-    await chrome.storage.local.set({ lastSelection: {
+      [`${field}Locator`]: { ...locator, frameUrl: sender.url } }, message.monitorId);
+    await monitorStorage.set({ lastSelection: {
       type: message.selectionType, selector: locator.targetSelector,
       matchedCount: Number.isSafeInteger(message.matchedCount) ? message.matchedCount : null, at: Date.now()
-    } });
+    } }, message.monitorId);
   });
   await executeInFramesBestEffort(sender.tab.id, cleanupPicker, []);
   return { ok: true };
 }
 
-function installPicker(selectionType, sessionId) {
+async function previewVisualSelection(monitorId) {
+  const { monitorConfig, monitorSelectionDraft } = await monitorStorage.get(["monitorConfig", "monitorSelectionDraft"], monitorId);
+  if (!monitorSelectionDraft || monitorSelectionDraft.revision !== monitorConfig?.revision) throw new Error("Selecione o elemento novamente.");
+  const config = { ...monitorConfig, type: "visual", visualLocator: monitorSelectionDraft.locator };
+  const tab = await ensureDedicatedTabReady(config);
+  const snapshot = await captureWithRetry(tab.id, config);
+  const previewToken = crypto.randomUUID();
+  await withStateUpdate(async () => {
+    const latest = await monitorStorage.get(["monitorConfig", "monitorSelectionDraft"], monitorId);
+    if (latest.monitorConfig?.revision !== config.revision || latest.monitorSelectionDraft?.id !== monitorSelectionDraft.id) throw new Error("A seleção mudou. Revalide a prévia.");
+    await monitorStorage.set({ monitorSelectionDraft: { ...monitorSelectionDraft,
+      preview: snapshot.value.slice(0, 240), previewToken, snapshotKey: snapshotKey(snapshot) } }, monitorId);
+  });
+  return { ok: true, preview: snapshot.value.slice(0, 240), previewToken,
+    unstable: monitorSelectionDraft.locator.stability === "fragile" };
+}
+
+async function confirmVisualSelection(monitorId, token) {
+  const { monitorConfig, monitorSelectionDraft: draft } = await monitorStorage.get(["monitorConfig", "monitorSelectionDraft"], monitorId);
+  if (!draft?.previewToken || draft.previewToken !== token || draft.revision !== monitorConfig?.revision) throw new Error("Revalide a prévia antes de confirmar.");
+  const tab = await ensureDedicatedTabReady(monitorConfig);
+  const snapshot = await captureWithRetry(tab.id, { ...monitorConfig, type: "visual", visualLocator: draft.locator });
+  if (snapshotKey(snapshot) !== draft.snapshotKey) throw new Error("O conteúdo mudou desde a prévia. Revalide e confirme novamente.");
+  const config = await withStateUpdate(async () => {
+    const latest = await monitorStorage.get(["monitorConfig", "monitorSelectionDraft"], monitorId);
+    if (latest.monitorConfig?.revision !== monitorConfig.revision || latest.monitorSelectionDraft?.previewToken !== token) throw new Error("A seleção mudou. Revalide a prévia.");
+    const next = await updateMonitorConfig({ visualLocator: draft.locator,
+      selectorStrategy: { primary: draft.locator.targetSelector, fallbacks: draft.locator.fallbacks || [] },
+      type: "visual", enabled: false }, monitorId);
+    await monitorStorage.set({ monitorSelectionDraft: null }, monitorId);
+    return next;
+  });
+  return { ok: true, config };
+}
+
+function installPicker(selectionType, sessionId, monitorId) {
   const BANNER_ID = "__web_monitor_picker_banner";
   const OVERLAY_ID = "__web_monitor_picker_overlay";
 
@@ -977,9 +1106,9 @@ function installPicker(selectionType, sessionId) {
   }
 
   function stableAttributes(element) {
-    return ["data-cy", "data-testid", "data-test", "data-qa", "name", "aria-label", "role"]
-      .map((name) => [name, element.getAttribute?.(name)])
-      .filter(([, value]) => value);
+    const names = new Set(["data-cy", "data-testid", "data-test", "data-qa", "name", "aria-label", "role"]);
+    for (const name of element.getAttributeNames()) if (/^(data-|aria-)/.test(name) && !/(value|count|state|index|busy|selected|expanded|checked)/.test(name)) names.add(name);
+    return [...names].map(name => [name, element.getAttribute(name)]).filter(([, value]) => value && value.length < 120);
   }
 
   function uniqueSelectorInRoot(element, root) {
@@ -1075,8 +1204,12 @@ function installPicker(selectionType, sessionId) {
     const chain = shadowChainFor(element);
     if (!chain) return null;
     return {
-      version: 1,
+      version: 2,
       mode,
+      elementTag: mode === "single" ? element.tagName.toLowerCase() : null,
+      fallbacks: stableAttributes(element).map(([name, value]) => `${element.tagName.toLowerCase()}[${name}="${attrEscape(value)}"]`)
+        .filter(selector => selector !== targetSelector && countInRoot(element.getRootNode(), selector) === 1),
+      stability: /:nth-|^#[^ ]*\d{4,}|\.css-|\.sc-/.test(targetSelector) ? "fragile" : "stable",
       shadowChain: chain,
       targetSelector,
       matchedCount: count,
@@ -1131,7 +1264,7 @@ function installPicker(selectionType, sessionId) {
 
   const banner = document.createElement("div");
   banner.id = BANNER_ID;
-  banner.textContent = selectionType === "counter"
+  banner.textContent = selectionType === "visual" ? "Web Monitor • Clique no elemento • Depois abra a extensão para confirmar • ESC cancela" : selectionType === "counter"
     ? "Web Monitor • Clique no contador da fila • ESC cancela"
     : "Web Monitor • Clique em um item/chamado da lista • ESC cancela";
   Object.assign(banner.style, {
@@ -1168,14 +1301,19 @@ function installPicker(selectionType, sessionId) {
     event.stopPropagation();
     event.stopImmediatePropagation();
 
-    const chosen = selectionType === "counter" ? chooseCounter(path) : chooseItems(path);
+    const target = path[0];
+    if (selectionType === "visual" && target.matches('input[type="password"], input[type="hidden"]')) return;
+    const chosen = selectionType === "visual"
+      ? { element: target, selector: uniqueSelectorInRoot(target, target.getRootNode()), count: 1 }
+      : selectionType === "counter" ? chooseCounter(path) : chooseItems(path);
     if (!chosen) return;
-    const locator = buildLocator(chosen.element, chosen.selector, selectionType === "counter" ? "single" : "list", chosen.count || 1);
+    const locator = buildLocator(chosen.element, chosen.selector, selectionType === "items" ? "list" : "single", chosen.count || 1);
     const sampleText = chosen.element.getAttribute?.("value") || chosen.element.textContent?.trim() || chosen.element.getAttribute?.("aria-label") || "";
 
     chrome.runtime.sendMessage({
       type: "ELEMENT_SELECTED",
       sessionId,
+      monitorId,
       selectionType,
       selector: chosen.selector,
       locator,

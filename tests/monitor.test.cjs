@@ -77,7 +77,7 @@ test('unmarked legacy snapshot becomes a safe new baseline on upgrade', async ()
 });
 test('concurrent history updates lose no records and retain the most recent 80', async () => {
   const h=harness();h.context.entries=Array.from({length:85},(_,at)=>({at,type:'test',summary:'fixture'}));
-  await h.run('Promise.all(entries.map(appendHistory))');
+  await h.run('Promise.all(entries.map(event => appendHistory(event)))');
   assert.equal(h.store.monitorHistory.length,80);assert.equal(h.store.monitorHistory[0].at,84);
 });
 test('concurrent channel updates retain independent outcomes', async () => {
