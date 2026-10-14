@@ -13,10 +13,10 @@ const { harness, root } = require('../tests/helpers.cjs');
   const browser = await chromium.launch(options);
   const server = http.createServer((request, response) => {
     const name = request.url.slice(1);
-    if (!['popup.html','popup.js','popup.css','icon48.png'].includes(name)) {
+    if (!['popup.html','popup.js','popup.css','icon48.png','alert.wav','sounds/bell.wav','sounds/digital.wav','sounds/critical.wav'].includes(name)) {
       response.writeHead(404); response.end(); return;
     }
-    const mime = name.endsWith('.js') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : name.endsWith('.png') ? 'image/png' : 'text/html';
+    const mime = name.endsWith('.js') ? 'text/javascript' : name.endsWith('.css') ? 'text/css' : name.endsWith('.png') ? 'image/png' : name.endsWith('.wav') ? 'audio/wav' : 'text/html';
     response.setHeader('Content-Type', mime);
     response.end(fs.readFileSync(path.join(root,name)));
   });
@@ -62,6 +62,35 @@ const { harness, root } = require('../tests/helpers.cjs');
     assert.equal(result.counterFound,false); assert.ok(result.invalidItems>0);
     passed('invalid CSS selector rejects the capture');
 
+    await page.setContent('<div id="target" data-testid="queue-indicator">Critical incidents: 3</div>');
+    await page.evaluate(() => { window.chrome={runtime:{sendMessage:async message=>{window.sentSelection=message;return {ok:true}}}}; });
+    await page.evaluate(h.context.installPicker,'visual');
+    await page.locator('#target').hover();
+    assert.equal(await page.locator('#__web_monitor_picker_overlay').evaluate(el=>el.style.display),'block');
+    await page.locator('#target').click();
+    await page.waitForFunction(()=>Boolean(window.sentSelection));
+    const selected=await page.evaluate(()=>window.sentSelection);
+    assert.equal(selected.selectionType,'visual');
+    assert.ok(selected.locator.fallbacks.includes('div[data-testid="queue-indicator"]'));
+    assert.equal(await page.locator('#__web_monitor_picker_overlay').count(),0);
+    passed('visual picker highlights, selects semantic fallbacks and cleans up listeners');
+
+    await page.evaluate(()=>{document.querySelector('#target').id='changed-id'});
+    result=await capture({type:'visual',visualLocator:selected.locator});
+    assert.equal(result.visualFound,true);assert.equal(result.value,'Critical incidents: 3');
+    passed('visual monitor survives a changed primary ID through its semantic fallback');
+
+    await page.setContent('<input type="password" id="private" value="fixture-value">');
+    result=await capture({type:'visual',visualLocator:{shadowChain:[],targetSelector:'#private'}});
+    assert.equal(result.visualFound,false);assert.equal(result.value,'');
+    passed('password inputs are not captured by a visual monitor');
+
+    await page.setContent('<div id="target">3</div>');
+    await page.evaluate(h.context.installPicker,'visual');await page.keyboard.press('Escape');
+    assert.equal(await page.locator('#__web_monitor_picker_overlay').count(),0);
+    assert.equal(await page.evaluate(()=>Boolean(window.__webMonitorPicker)),false);
+    passed('Escape cancels selection without a retained picker');
+
     const ui = await browser.newPage();
     const errors=[]; ui.on('pageerror',error=>errors.push(error.message));
     await ui.exposeFunction('mockExtensionMessage', async message => h.json(await h.run(`handleMessage(${JSON.stringify(message)})`)));
@@ -102,6 +131,59 @@ const { harness, root } = require('../tests/helpers.cjs');
     await ui.waitForFunction(()=>document.querySelectorAll('.history-row').length===80);
     assert.equal(await ui.locator('#healthStatus').textContent(),'🟡 Aguardando confirmação');
     passed('all retained history entries and pending empty-state indicator');
+
+    await ui.locator('[data-tab="dashboard"]').click();
+    assert.equal(await ui.locator('.monitor-card').count(),1);
+    assert.ok((await ui.locator('#globalCurrent').textContent()).includes('1'));
+    await ui.locator('.monitor-card .monitor-name').click();
+    await ui.waitForFunction(()=>document.querySelector('#tab-details').classList.contains('active'));
+    passed('Home shows persisted monitors and opens their details');
+
+    await ui.locator('[data-tab="integrations"]').click();
+    await ui.locator('#soundId').selectOption('bell');await ui.locator('#soundEnabled').uncheck();
+    await ui.locator('#saveSoundBtn').click();
+    await ui.waitForFunction(()=>document.querySelector('#toast').textContent==='Configuração salva.');
+    assert.equal(h.store.monitorConfig.soundId,'bell');assert.equal(h.store.monitorConfig.soundEnabled,false);
+    assert.equal(await ui.locator('#soundId option').count(),4);
+    passed('four local sounds, selected preference and mute persist through the UI');
+
+    h.store.monitorPendingSnapshot=null;
+    h.store.monitorConfig.type='visual';
+    h.store.monitorSelectionDraft={id:'ui-draft',revision:h.store.monitorConfig.revision,
+      locator:{targetSelector:'#target',shadowChain:[],frameUrl:'about:blank',stability:'fragile'},preview:'3'};
+    h.capture({total:3,items:[],value:'3',coverage:'element',frameUrl:'about:blank'});
+    await ui.evaluate(()=>window.storageChanged({},'local'));
+    await ui.waitForFunction(()=>!document.querySelector('#confirmSelectionBtn').disabled);
+    assert.equal(await ui.locator('#visualPreviewText').textContent(),'3');
+    assert.ok((await ui.locator('#selectorWarning').textContent()).includes('pode mudar'));
+    await ui.locator('#confirmSelectionBtn').click();
+    await ui.waitForFunction(()=>document.querySelector('#tab-details').classList.contains('active'));
+    assert.equal(h.store.monitorConfig.visualLocator.targetSelector,'#target');
+    assert.equal(h.store.monitorSelectionDraft,null);
+    passed('validated visual preview, instability warning and confirmation are connected in the real popup');
+    const durations=await ui.evaluate(async()=>{
+      const context=new OfflineAudioContext(1,22050,22050);
+      const durations=[];
+      for(const file of ['alert.wav','sounds/bell.wav','sounds/digital.wav','sounds/critical.wav']) {
+        const data=await(await fetch(file)).arrayBuffer();
+        durations.push((await context.decodeAudioData(data)).duration);
+      }
+      return durations;
+    });
+    assert.equal(durations.length,4);assert.ok(durations.every(duration=>duration>0 && duration<2));
+    passed('all four bundled audio files decode successfully in Chromium');
+    if (process.env.WEB_MONITOR_SCREENSHOT) {
+      h.tick(Date.now()-100000);
+      Object.assign(h.store.monitorConfig,{name:'SysAid — SOC N2',type:'queue',enabled:true});
+      h.store.monitorSnapshot={total:8,items:['370415','370416'],coverage:'visible',checkedAt:Date.now()};
+      h.store.monitorSamples=[{at:Date.now()-3600000,total:5},{at:Date.now(),total:8}];
+      h.store.monitorHistory=[{type:'change',at:Date.now()-300000,summary:'+3 itens no total',delta:3,idsComparable:false}];
+      await ui.setViewportSize({width:500,height:760});
+      await ui.evaluate(()=>window.storageChanged({},'local'));
+      await ui.locator('[data-tab="dashboard"]').click();
+      await ui.waitForFunction(()=>document.querySelector('#globalCurrent').textContent==='8');
+      await ui.screenshot({path:process.env.WEB_MONITOR_SCREENSHOT,fullPage:true});
+    }
     assert.deepEqual(errors,[]);
     console.log(`${checks}/${checks} browser fixture/UI checks passed; extension APIs were simulated.`);
   } finally { await browser.close(); await new Promise(resolve => server.close(resolve)); }

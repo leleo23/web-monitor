@@ -11,6 +11,9 @@ const ui = Object.fromEntries([
 
 let currentConfig = null;
 let formDirty = false;
+let refreshSequence = 0;
+let validatingSelection = false;
+let selectionToken = null;
 
 function toast(message, type = "") {
   ui.toast.textContent = message;
@@ -21,7 +24,7 @@ function toast(message, type = "") {
 
 function fmtTime(ts) {
   if (!ts) return "—";
-  return new Date(ts).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+  return new Date(ts).toLocaleTimeString('pt-BR', { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
 function getFormConfig() {
@@ -36,6 +39,8 @@ function getFormConfig() {
     alertOnCountDecrease: ui.alertOnCountDecrease.checked,
     notificationsEnabled: ui.notificationsEnabled.checked,
     soundEnabled: ui.soundEnabled.checked,
+    soundId: $("#soundId").value,
+    volume: Number($("#soundVolume").value) / 100,
     telegramEnabled: ui.telegramEnabled.checked,
     telegramBotToken: ui.telegramBotToken.value.trim(),
     telegramChatId: ui.telegramChatId.value.trim(),
@@ -45,7 +50,7 @@ function getFormConfig() {
 }
 
 async function send(type, payload = {}) {
-  try { return await chrome.runtime.sendMessage({ type, ...payload }); }
+  try { return await chrome.runtime.sendMessage({ type, monitorId: currentConfig?.id, ...payload }); }
   catch (error) { return { ok: false, error: error.message }; }
 }
 
@@ -207,6 +212,12 @@ function renderConfig(config) {
   ui.alertOnCountDecrease.checked = config?.alertOnCountDecrease === true;
   ui.notificationsEnabled.checked = config?.notificationsEnabled !== false;
   ui.soundEnabled.checked = config?.soundEnabled !== false;
+  $("#soundId").value = config?.soundId || "pulse";
+  $("#soundVolume").value = Math.round((config?.volume ?? 0.7) * 100);
+  $("#detailName").textContent = config?.name || "Seu monitor";
+  $("#visualSetup").classList.toggle("hidden", config?.type !== "visual");
+  $("#queueSetup").classList.toggle("hidden", config?.type === "visual");
+  $("#visualSummary").textContent = config?.visualLocator ? "Elemento confirmado: " + config.visualLocator.targetSelector : "Nenhum elemento confirmado.";
   ui.telegramEnabled.checked = config?.telegramEnabled === true;
   ui.telegramBotToken.value = config?.telegramBotToken ?? "";
   ui.telegramChatId.value = config?.telegramChatId ?? "";
@@ -278,7 +289,7 @@ function renderChannels(status, config) {
 }
 
 function renderSnapshot(snapshot) {
-  $('#coverageDetail').textContent = !snapshot ? '' : snapshot.coverage === 'full'
+  $('#coverageDetail').textContent = typeof snapshot?.value === "string" ? "Conteúdo visual observado localmente." : !snapshot ? '' : snapshot.coverage === 'full'
     ? 'Lista completa: entradas e saídas de chamados podem ser confirmadas.'
     : 'Lista parcial: alertas de IDs ficam suspensos; alterações do total continuam monitoradas.';
   ui.totalValue.textContent = typeof snapshot?.total === "number" ? snapshot.total : "—";
@@ -286,6 +297,10 @@ function renderSnapshot(snapshot) {
   ui.visibleValue.title = snapshot?.coverage === "full" ? "Todos os chamados do total estão visíveis." : "Lista parcial: alertas de IDs ficam suspensos; alterações do total continuam monitoradas.";
   ui.lastCheck.textContent = fmtTime(snapshot?.checkedAt);
   ui.itemsList.innerHTML = "";
+  if (typeof snapshot?.value === "string") {
+    ui.itemsList.className = "items";
+    ui.itemsList.textContent = snapshot.value.slice(0, 240); return;
+  }
   if (!snapshot?.items?.length) {
     ui.itemsList.className = "items empty";
     ui.itemsList.textContent = snapshot?.total === 0 ? "Fila vazia confirmada." : "Nenhum estado salvo.";
@@ -329,7 +344,9 @@ function renderHistory(history) {
 }
 
 async function refresh() {
+  const sequence = ++refreshSequence;
   const response = await send("GET_STATUS");
+  if (sequence !== refreshSequence) return;
   if (!response.ok) return toast(response.error || "Falha ao carregar status.", "error");
   if (!formDirty) renderConfig(response.config);
   else currentConfig = response.config || {};
@@ -346,12 +363,145 @@ async function refresh() {
   renderSnapshot(response.snapshot);
   renderHistory(response.history);
   ui.nextCheck.textContent = fmtTime(response.nextCheckAt);
+  renderHome(response.monitors || []);
+  renderInsights(response.insights);
+  renderSelection(response.selectionDraft);
+  if (response.selectionDraft && !response.selectionDraft.previewToken && !validatingSelection) {
+    activateTab('setup');
+    await revalidateSelection();
+  }
 }
 
-$$('.tab').forEach((button) => button.addEventListener('click', () => {
-  $$('.tab').forEach((tab) => tab.classList.toggle('active', tab === button));
-  $$('.tab-panel').forEach((panel) => panel.classList.toggle('active', panel.id === `tab-${button.dataset.tab}`));
-}));
+$$('.tab').forEach(button => button.addEventListener('click', () => activateTab(button.dataset.tab)));
+
+function activateTab(name) {
+  $$('.tab').forEach(tab => tab.classList.toggle('active', tab.dataset.tab === name));
+  $$('.tab-panel').forEach(panel => panel.classList.toggle('active', panel.id === `tab-${name}`));
+}
+
+function node(tag, text, className) {
+  const element = document.createElement(tag);
+  if (text !== undefined) element.textContent = text;
+  if (className) element.className = className;
+  return element;
+}
+
+async function selectMonitor(id, tab = 'details') {
+  if (formDirty && !window.confirm('Descartar alterações não salvas para abrir outro monitor?')) return;
+  const response = await send('SELECT_MONITOR', { monitorId: id });
+  if (!response.ok) throw new Error(response.error);
+  formDirty = false; currentConfig = response.config; selectionToken = null;
+  activateTab(tab); await refresh();
+}
+
+function cardAction(button, action) {
+  button.addEventListener('click', async () => {
+    button.disabled = true;
+    try { await action(); } catch (error) { toast(error.message || 'Falha na ação.', 'error'); }
+    finally { button.disabled = false; await refresh(); }
+  });
+}
+
+function renderHome(monitors) {
+  const active = monitors.filter(m => m.enabled).length;
+  $('#globalStatus').textContent = active ? `${active} monitor${active === 1 ? '' : 'es'} ativo${active === 1 ? '' : 's'}` : 'Monitoramento pausado';
+  $('#monitorCount').textContent = `${monitors.length} configurado${monitors.length === 1 ? '' : 's'}`;
+  const quantified = monitors.filter(m => Number.isFinite(m.snapshot?.total));
+  $('#globalCurrent').textContent = quantified.length ? quantified.reduce((sum,m)=>sum+m.snapshot.total,0) : '—';
+  $('#globalAdded').textContent = '+' + monitors.reduce((sum,m)=>sum+(m.insights?.added || 0),0);
+  $('#globalRemoved').textContent = '−' + monitors.reduce((sum,m)=>sum+(m.insights?.removed || 0),0);
+  $('#globalDataNote').textContent = monitors.some(m=>m.insights?.estimated)
+    ? 'Entradas/saídas estimadas pelo total em listas parciais. Dados de hoje retidos localmente.'
+    : 'Últimas leituras válidas. Monitores de texto não entram no total de itens.';
+  const list = $('#monitorList'); list.replaceChildren();
+  const select = $('#monitorSelect'); select.replaceChildren();
+  for (const monitor of monitors) {
+    const option = node('option', monitor.name); option.value = monitor.id; select.append(option);
+    const card = node('article',undefined,'monitor-card'); card.dataset.monitorId = monitor.id;
+    const head = node('div',undefined,'monitor-head');
+    const name = node('button',monitor.name,'monitor-name'); cardAction(name,()=>selectMonitor(monitor.id));
+    head.append(name,node('span',monitor.status.label,'monitor-status')); card.append(head);
+    const meta = node('div',undefined,'monitor-meta');
+    meta.append(node('span',monitor.snapshot?.total != null ? `${monitor.snapshot.total} itens` : monitor.snapshot?.value ? monitor.snapshot.value.slice(0,60) : 'Sem leitura'),
+      node('span','Última: '+fmtTime(monitor.snapshot?.checkedAt))); card.append(meta);
+    const actions = node('div',undefined,'monitor-actions');
+    const details = node('button','Detalhes','secondary'); cardAction(details,()=>selectMonitor(monitor.id));
+    const toggle = node('button',monitor.enabled ? 'Pausar' : 'Iniciar','ghost');
+    cardAction(toggle,async()=>{const r=await send(monitor.enabled?'STOP_MONITORING':'START_MONITORING',{monitorId:monitor.id}); if(!r.ok)throw new Error(r.error);});
+    const history = node('button','Histórico','link-btn'); cardAction(history,()=>selectMonitor(monitor.id,'history'));
+    actions.append(details,toggle,history); card.append(actions); list.append(card);
+  }
+  select.value = currentConfig?.id || '';
+  if (!monitors.length) list.append(node('p','Crie seu primeiro monitor para acompanhar uma página.','empty'));
+  const activity = $('#recentActivity'); activity.replaceChildren();
+  const events = monitors.flatMap(m=>(m.activity || []).map(event=>({...event,monitorId:m.id,name:m.name})))
+    .sort((a,b)=>b.at-a.at).slice(0,8);
+  for (const event of events) {
+    const row=node('div',undefined,'history-row');
+    row.append(node('div',`${fmtTime(event.at)} · ${event.name}`,'history-time'),node('div',event.summary,'history-text')); activity.append(row);
+  }
+  if (!events.length) activity.textContent='Nenhuma alteração registrada.';
+}
+
+function renderInsights(insights) {
+  const value = insights || {};
+  $('#insightAdded').textContent = '+' + (value.added || 0);
+  $('#insightRemoved').textContent = '−' + (value.removed || 0);
+  $('#insightPeak').textContent = value.peak ?? '—';
+  $('#insightPeakAt').textContent = value.peakAt ? fmtTime(value.peakAt) : '';
+  $('#insightChanges').textContent = value.changes || 0;
+  $('#lastChangeText').textContent = value.lastChangeAt ? 'Última alteração: '+new Date(value.lastChangeAt).toLocaleString() : 'Nenhuma alteração observada.';
+  $('#insightNote').textContent = (value.estimated ? 'Entradas/saídas estimadas pela variação do total. ' : '')+
+    (value.legacyEvents ? 'Eventos antigos sem detalhes não entram nos totais. ' : '')+
+    'Dados retidos: até 80 eventos e 288 leituras por monitor. Não representa necessariamente o dia inteiro.';
+  const chart = $('#quantityChart'); chart.replaceChildren();
+  const points = (value.timeline || []).slice(-96);
+  if (points.length < 2) { chart.append(node('p','A evolução aparecerá após duas leituras numéricas.','subtle')); return; }
+  const ns='http://www.w3.org/2000/svg', svg=document.createElementNS(ns,'svg');
+  svg.setAttribute('viewBox','0 0 440 100'); svg.setAttribute('role','img'); svg.setAttribute('aria-label','Evolução da quantidade nas leituras de hoje');
+  const max=Math.max(1,...points.map(p=>p.total)), first=points[0].at, span=Math.max(1,points.at(-1).at-first);
+  const line=document.createElementNS(ns,'polyline');
+  line.setAttribute('points',points.map(p=>`${10+420*(p.at-first)/span},${85-70*p.total/max}`).join(' '));
+  line.setAttribute('fill','none'); line.setAttribute('stroke','#2563eb'); line.setAttribute('stroke-width','2.5'); svg.append(line);
+  const title=document.createElementNS(ns,'title'); title.textContent=points.map(p=>`${fmtTime(p.at)}: ${p.total}`).join('; '); svg.prepend(title); chart.append(svg);
+  chart.append(node('p',`${fmtTime(points[0].at)} → ${fmtTime(points.at(-1).at)} · até ${max} itens`,'subtle'));
+}
+
+function renderSelection(draft) {
+  $('#selectionPreview').classList.toggle('hidden',!draft);
+  selectionToken = draft?.previewToken || null;
+  $('#visualPreviewText').textContent = draft?.preview || '';
+  $('#selectorWarning').textContent = draft?.locator?.stability === 'fragile'
+    ? 'A localização depende da estrutura da página e pode mudar. Revalide antes de confirmar.'
+    : 'Confira o conteúdo. O elemento será testado novamente antes de salvar.';
+  $('#confirmSelectionBtn').disabled = !selectionToken;
+}
+
+async function revalidateSelection() {
+  if (validatingSelection) return;
+  validatingSelection = true;
+  try {
+    const response = await send('PREVIEW_SELECTION');
+    if (!response.ok) throw new Error(response.error);
+    selectionToken = response.previewToken;
+    $('#visualPreviewText').textContent = response.preview;
+    $('#confirmSelectionBtn').disabled = false;
+  } catch(error) { toast(error.message,'error'); }
+  finally { validatingSelection=false; }
+}
+
+async function createMonitor(type) {
+  const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
+  if (!tab?.url || !/^https?:/i.test(tab.url)) throw new Error('Abra a página que deseja monitorar antes de criar um monitor.');
+  if (!(await requestOrigin(tab.url))) throw new Error('Permissão para a página não concedida.');
+  if (formDirty && !window.confirm('Descartar edições não salvas e criar outro monitor?')) return;
+  const response=await send('CREATE_MONITOR',{monitorType:type});
+  if (!response.ok) throw new Error(response.error);
+  formDirty=false; currentConfig=response.config; renderConfig(response.config);
+  $('#createChooser').classList.add('hidden'); activateTab('setup');
+  await createDedicatedTab();
+  if (type==='visual') await beginPicker('visual');
+}
 
 function bindAction(id, action) {
   $(id).addEventListener("click", async (event) => {
@@ -363,6 +513,27 @@ function bindAction(id, action) {
   });
 }
 
+bindAction('#newMonitorBtn',()=>{$('#createChooser').classList.toggle('hidden');});
+bindAction('#createVisualBtn',()=>createMonitor('visual'));
+bindAction('#createQueueBtn',()=>createMonitor('queue'));
+bindAction('#pickVisualBtn',()=>beginPicker('visual'));
+bindAction('#revalidateSelectionBtn',revalidateSelection);
+bindAction('#confirmSelectionBtn',async()=>{
+  const response=await send('CONFIRM_SELECTION',{previewToken:selectionToken});
+  if(!response.ok)throw new Error(response.error);
+  currentConfig=response.config; selectionToken=null;
+  if(formDirty)await saveConfig({message:false});
+  toast('Elemento confirmado. Inicie o monitor quando quiser.','success'); activateTab('details');
+});
+bindAction('#discardSelectionBtn',async()=>{const r=await send('DISCARD_SELECTION');if(!r.ok)throw new Error(r.error);});
+bindAction('#previewSoundBtn',async()=>{const r=await send('PREVIEW_SOUND',{soundId:$('#soundId').value,volume:Number($('#soundVolume').value)/100});if(!r.ok)throw new Error(r.error);toast('Prévia do som reproduzida.');});
+bindAction('#saveSoundBtn',()=>saveConfig());
+bindAction('#deleteMonitorBtn',async()=>{
+  if(!currentConfig?.id || !window.confirm('Excluir este monitor, seu histórico e preferências?'))return;
+  const response=await send('DELETE_MONITOR'); if(!response.ok)throw new Error(response.error);
+  currentConfig=response.config;formDirty=false;selectionToken=null;activateTab('dashboard');
+});
+$('#monitorSelect').addEventListener('change',event=>selectMonitor(event.target.value).catch(error=>toast(error.message,'error')));
 bindAction('#createDedicatedBtn', createDedicatedTab);
 bindAction('#pickCounterBtn', () => beginPicker('counter'));
 bindAction('#pickItemsBtn', () => beginPicker('items'));
@@ -385,7 +556,7 @@ bindAction('#clearHistoryBtn', async () => {
   if (!response.ok) throw new Error(response.error || 'Falha ao limpar histórico.');
   toast('Histórico limpo.', 'success');
 });
-$$('input, textarea').forEach((field) => field.addEventListener('input', () => { formDirty = true; }));
+$$('input, textarea, #soundId').forEach((field) => field.addEventListener('input', () => { formDirty = true; }));
 chrome.storage.onChanged.addListener((_changes, area) => {
   if (area === 'local') refresh().catch(() => toast('Falha ao atualizar status.', 'error'));
 });

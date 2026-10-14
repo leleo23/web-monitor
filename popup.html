@@ -13,17 +13,39 @@
         <img src="icon48.png" alt="">
         <div><h1>Web Monitor</h1><p>Monitoramento local de filas web</p></div>
       </div>
-      <span class="version">v0.5.1</span>
+      <span class="version">v0.6.0</span>
     </header>
 
     <nav class="tabs">
-      <button class="tab active" data-tab="dashboard">Visão geral</button>
+      <button class="tab active" data-tab="dashboard">Home</button>
+      <button class="tab" data-tab="details">Monitor</button>
       <button class="tab" data-tab="setup">Configurar</button>
       <button class="tab" data-tab="integrations">Integrações</button>
       <button class="tab" data-tab="history">Histórico</button>
     </nav>
 
     <section id="tab-dashboard" class="tab-panel active">
+      <section class="card home-summary">
+        <div class="section-title"><div><span class="eyebrow">SEU AMBIENTE</span><h2 id="globalStatus">Nenhum monitor</h2></div><button id="newMonitorBtn" class="primary">+ Criar monitor</button></div>
+        <div class="home-metrics">
+          <div><span>Itens atuais</span><strong id="globalCurrent">—</strong></div>
+          <div><span>Novos hoje</span><strong id="globalAdded">+0</strong></div>
+          <div><span>Removidos hoje</span><strong id="globalRemoved">−0</strong></div>
+        </div>
+        <p id="globalDataNote">Valores das últimas leituras válidas.</p>
+      </section>
+      <section id="createChooser" class="card hidden">
+        <h2>O que você quer acompanhar?</h2><p>Escolha uma página aberta no navegador.</p>
+        <button id="createVisualBtn" class="choice"><strong>Selecionar elemento na página</strong><span>Observe mudanças em um texto, número ou indicador.</span></button>
+        <button id="createQueueBtn" class="choice"><strong>Fila de chamados</strong><span>Selecione contador e IDs. Ideal para SysAid.</span></button>
+      </section>
+      <div class="section-title"><h2>Monitores</h2><span id="monitorCount" class="subtle"></span></div>
+      <div id="monitorList" class="monitor-list"></div>
+      <section class="card"><h2>Atividade recente</h2><div id="recentActivity" class="history empty">Nenhuma alteração registrada.</div></section>
+    </section>
+
+    <section id="tab-details" class="tab-panel">
+      <div class="detail-heading"><h2 id="detailName">Seu monitor</h2><select id="monitorSelect" aria-label="Escolher monitor"></select></div>
       <section class="hero card">
         <div class="hero-row">
           <div>
@@ -46,6 +68,17 @@
         <article class="metric card"><span>Próxima</span><strong id="nextCheck">—</strong></article>
       </section>
 
+      <section class="card insights-card">
+        <div class="section-title"><div><h2>Insights operacionais</h2><p>Hoje · horário local · dados retidos</p></div></div>
+        <div class="insight-grid">
+          <div><span>Novos</span><strong id="insightAdded">+0</strong></div>
+          <div><span>Removidos</span><strong id="insightRemoved">−0</strong></div>
+          <div><span>Pico</span><strong id="insightPeak">—</strong><small id="insightPeakAt"></small></div>
+          <div><span>Alterações</span><strong id="insightChanges">0</strong></div>
+        </div>
+        <p id="lastChangeText">Nenhuma alteração observada.</p>
+        <div id="quantityChart"></div><p id="insightNote" class="subtle"></p>
+      </section>
       <section class="card">
         <div class="section-title"><div><h2>Canais</h2><p>Estado das notificações</p></div></div>
         <div id="channelGrid" class="channel-grid"></div>
@@ -69,7 +102,16 @@
         </div>
       </section>
 
-      <section class="card step-card">
+      <section id="visualSetup" class="card hidden">
+        <h2>Elemento monitorado</h2><p>Escolha um texto, contador ou indicador. A extensão observa alterações; não executa código informado por você.</p>
+        <button id="pickVisualBtn" class="primary full">Selecionar elemento na página</button>
+        <p id="visualSummary" class="subtle">Nenhum elemento confirmado.</p>
+      </section>
+      <section id="selectionPreview" class="card hidden">
+        <h2>Confira o conteúdo</h2><pre id="visualPreviewText"></pre><p id="selectorWarning" class="subtle"></p>
+        <div class="actions"><button id="revalidateSelectionBtn" class="secondary">Revalidar prévia</button><button id="confirmSelectionBtn" class="primary" disabled>Confirmar monitor</button><button id="discardSelectionBtn" class="ghost">Cancelar</button></div>
+      </section>
+      <section id="queueSetup" class="card step-card">
         <span class="step">2</span>
         <div class="step-content">
           <h2>Elementos da fila</h2>
@@ -110,6 +152,7 @@
           <label class="toggle"><input id="alertOnCountDecrease" type="checkbox"><span><strong>Redução da fila</strong><small>Alertar quando o total diminuir.</small></span></label>
           <p>Em listas paginadas, os alertas usam o total. “Ler agora” verifica a fila sem enviar notificações.</p>
           <button id="saveBtn" class="primary full">Salvar configuração</button>
+          <button id="deleteMonitorBtn" class="link-btn danger-text full">Excluir este monitor</button>
         </div>
       </section>
     </section>
@@ -119,6 +162,11 @@
         <div class="integration-head"><div class="integration-icon">🔔</div><div><h2>Desktop + som</h2><p>Alerta detalhado somente neste computador.</p></div></div>
         <label class="toggle"><input id="notificationsEnabled" type="checkbox" checked><span><strong>Notificação do Chrome/Windows</strong></span></label>
         <label class="toggle"><input id="soundEnabled" type="checkbox" checked><span><strong>Alerta sonoro</strong></span></label>
+        <label for="soundId">Som de alerta</label>
+        <div class="field-action"><select id="soundId"><option value="pulse">Pulse</option><option value="bell">Bell</option><option value="digital">Digital</option><option value="critical">Critical</option></select><button id="previewSoundBtn" class="ghost">▶ Ouvir</button></div>
+        <label for="soundVolume">Volume</label><input id="soundVolume" type="range" min="0" max="100" value="70">
+        <p>A prévia permite ouvir mesmo com alertas silenciados. Salve para aplicar a preferência a este monitor.</p>
+        <button id="saveSoundBtn" class="secondary full">Salvar som</button>
         <button id="testAlertBtn" class="ghost full">Testar alerta local</button>
       </section>
 
