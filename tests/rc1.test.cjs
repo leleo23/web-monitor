@@ -32,3 +32,17 @@ test('interval is clamped and incomplete integrations cannot be enabled',async()
  await assert.rejects(h.run('saveMonitorConfig({telegramEnabled:true})'));
  await assert.rejects(h.run('saveMonitorConfig({automationEnabled:true})'));
 });
+test('Telegram send/discovery and webhook all terminate on a network timeout',async()=>{
+ const h=harness();await h.run('storageReady');Object.assign(h.store.monitorConfig,{telegramBotToken:'fixture',telegramChatId:'fixture',automationWebhookUrl:'https://fixture.invalid/hook'});
+ h.context.setTimeout=fn=>setTimeout(fn,1);
+ h.context.fetch=(_url,options)=>new Promise((_resolve,reject)=>options.signal.addEventListener('abort',()=>reject(Object.assign(Error('timeout'),{name:'AbortError'}))));
+ for(const code of ['sendTelegramMessage(config,"test")','discoverTelegramChat("legacy")','sendAutomationWebhook(config,"test",1)']){
+  h.context.config=h.store.monitorConfig;await assert.rejects(h.run(code),error=>error.message.includes('prazo'));
+ }
+});
+test('simultaneous offscreen requests share one creation promise',async()=>{
+ const h=harness();await h.run('storageReady');let calls=0,release;
+ h.chrome.runtime.getContexts=async()=>[];h.chrome.offscreen.createDocument=async()=>{calls++;await new Promise(resolve=>{release=resolve})};
+ const first=h.run('ensureOffscreenDocument()'),second=h.run('ensureOffscreenDocument()');
+ await new Promise(resolve=>setImmediate(resolve));assert.equal(calls,1);release();await Promise.all([first,second]);
+});
