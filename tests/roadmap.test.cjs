@@ -17,7 +17,7 @@ test('diagnostic reads do not change the baseline, health or observations',async
 test('detection only applies a validated suggestion after explicit confirmation',async()=>{
  const h=harness();await h.run('storageReady');h.store.monitorSnapshot=h.snapshot(8,['1']);
  h.context.candidates=[{confidence:90,preset:'SysAid',total:8,items:1,examples:['1'],counterSelector:'#new',itemSelector:'.new',counterLocator:null,itemLocator:null}];
- h.run('ensureDedicatedTabReady=async()=>({id:1});executeInFramesBestEffort=async()=>[{ok:true,result:candidates}]');
+ h.run('ensureDedicatedTabReady=async()=>({id:1});executeInFramesBestEffort=async(_tab,func)=>func===detectQueueFrame?[{ok:true,result:candidates}]:[{ok:true,frameId:0,result:{counterFound:true,total:8,items:["1"],invalidItems:0,href:"https://fixture.invalid/queue"}}]');
  const result=await h.run('handleMessage({type:"DETECT_QUEUE"})');assert.equal(h.store.monitorSnapshot.total,8);
  h.context.id=result.candidates[0].id;
  h.run('captureWithRetry=async()=>({total:8,items:["1"]})');

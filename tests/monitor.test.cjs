@@ -123,7 +123,7 @@ test('a redirect to another page is rejected before capture', async () => {
   await assert.rejects(h.run('ensureDedicatedTabReady(config)'),e=>e.code==='UNSUPPORTED_PAGE');
 });
 test('recreating a closed dedicated tab keeps picker session and stored tab consistent', async () => {
-  const h=harness();h.run('ensureDedicatedTabReady=async()=>({id:77});executeInFramesBestEffort=async()=>[{ok:true}]');
+  const h=harness();h.run('ensureDedicatedTabReady=async()=>({id:77});executeInFramesBestEffort=async(_tab,func,args)=>func===installPicker?[{ok:true,result:{type:"PICKER_READY",sessionId:args[1]}}]:[]');
   const result=await h.run('beginElementPicker("items")');
   assert.equal(result.ok,true);assert.equal(h.store.monitorConfig.tabId,77);
   assert.equal(h.store.pickerSession.tabId,77);

@@ -1,4 +1,4 @@
-importScripts("src/core/detection.js", "src/core/storage.js", "src/core/insights.js", "src/core/sounds.js", "src/core/detector.js", "src/core/portable.js");
+importScripts("src/core/detection.js", "src/core/storage.js", "src/core/insights.js", "src/core/sounds.js", "src/core/detector.js", "src/core/portable.js", "src/core/connectors.js");
 const monitorStorage = createMonitorStorage(chrome.storage.local);
 const { dailyInsights, monitorStatus } = WebMonitorInsights;
 const { compareSnapshots, shouldAlert, buildHistoryEvent, readingKey, snapshotKey, validateSnapshot } = WebMonitorCore;
@@ -103,8 +103,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const task = (async () => {
     await storageReady;
     if (sender.id !== chrome.runtime.id) throw new Error("Emissor inválido.");
+    if (message?.type === "PICKER_CANCELLED") return cancelPicker(message, sender);
     if (message?.type === "ELEMENT_SELECTED") return handleElementSelected(message, sender);
-    if (sender.tab || sender.url !== chrome.runtime.getURL("popup.html")) throw new Error("Comando permitido somente na interface da extensão.");
+    if (sender.url !== chrome.runtime.getURL("popup.html")) throw new Error("Comando permitido somente na interface da extensão.");
     return handleMessage(message);
   })();
 
@@ -154,8 +155,12 @@ async function handleMessage(message) {
       if(!config?.boundUrl)throw new Error("Use a página atual primeiro.");
       const tab = await ensureDedicatedTabReady(config);
       const frames = await executeInFramesBestEffort(tab.id, detectQueueFrame);
-      const candidates=frames.filter(r=>r.ok && Array.isArray(r.result)).flatMap(r=>r.result)
+      const proposed=frames.filter(r=>r.ok && Array.isArray(r.result)).flatMap(r=>r.result)
         .sort((a,b)=>b.confidence-a.confidence).slice(0,5).map(value=>({...value,id:crypto.randomUUID()}));
+      const candidates=[];
+      for(const candidate of proposed){
+        try{const checked=await validateQueueStructure(tab.id,{...config,...candidate,type:"queue"});candidates.push({...candidate,total:checked.total,items:checked.items.length,examples:checked.items.slice(0,3)});}catch{}
+      }
       await withStateUpdate(async()=>{
         if(!(await checkStillCurrent(config,"manual")))throw new Error("A configuração mudou. Detecte novamente.");
         await monitorStorage.set({monitorDetectionDraft:{revision:config.revision,candidates}},monitorId);
@@ -166,8 +171,8 @@ async function handleMessage(message) {
       const {monitorConfig:config,monitorDetectionDraft:draft}=await monitorStorage.get(["monitorConfig","monitorDetectionDraft"],monitorId);
       const selected=draft?.candidates.find(value=>value.id===message.candidateId);
       if(!selected || draft.revision!==config?.revision)throw new Error("Sugestão expirada. Detecte novamente.");
-      const proposal={...config,type:"queue",counterSelector:selected.counterSelector,itemSelector:selected.itemSelector,counterLocator:selected.counterLocator,itemLocator:selected.itemLocator};
-      const tab=await ensureDedicatedTabReady(config);await captureWithRetry(tab.id,proposal);
+      const proposal={...config,type:"queue",counterSelector:selected.counterSelector,itemSelector:selected.itemSelector,counterLocator:selected.counterLocator,itemLocator:selected.itemLocator,queueLocator:selected.queueLocator || null};
+      const tab=await ensureDedicatedTabReady(config);await validateQueueStructure(tab.id,proposal);
       const saved=await withStateUpdate(async()=>{
         if(!(await checkStillCurrent(config,"manual")))throw new Error("A configuração mudou.");
         return updateMonitorConfig({...proposal,enabled:false},monitorId);
@@ -285,7 +290,7 @@ async function getStatus(monitorId) {
   monitorId = monitorId || await monitorStorage.active();
   const data = await monitorStorage.get([
     "monitorConfig", "monitorSnapshot", "monitorHistory", "monitorLastError", "monitorHealth", "lastSelection",
-    "channelStatus", "monitorPendingSnapshot", "monitorEffectError", "monitorSamples", "monitorSelectionDraft", "monitorReading"
+    "channelStatus", "monitorPendingSnapshot", "monitorEffectError", "monitorSamples", "monitorSelectionDraft", "monitorReading", "monitorPickerStatus"
   ], monitorId);
   const alarm = await chrome.alarms.get(alarmName(monitorId));
   const monitors = [];
@@ -304,7 +309,7 @@ async function getStatus(monitorId) {
     config: data.monitorConfig || null, snapshot: data.monitorSnapshot || null, history: data.monitorHistory || [],
     lastError: data.monitorLastError || null, health: data.monitorHealth || null,
     pending: Boolean(data.monitorPendingSnapshot), effectError: data.monitorEffectError || null,
-    lastSelection: data.lastSelection || null, selectionDraft: data.monitorSelectionDraft || null,
+    lastSelection: data.lastSelection || null, selectionDraft: data.monitorSelectionDraft || null, pickerStatus:data.monitorPickerStatus || null,
     channelStatus: normalizeChannelStatus(data.channelStatus), nextCheckAt: alarm?.scheduledTime || null,
     monitors, insights: dailyInsights(data.monitorSnapshot, data.monitorHistory, data.monitorSamples)
   };
@@ -537,6 +542,20 @@ async function executeInFramesBestEffort(tabId, func, args = []) {
   return settled;
 }
 
+async function validateQueueStructure(tabId,config) {
+  let previous=null;
+  for(let attempt=0;attempt<4;attempt++){
+    const result=await captureAllFrames(tabId,config);
+    if(result.foundSomething){
+      const signature=JSON.stringify([result.snapshot.frameUrl,result.snapshot.counterFrameUrl,result.snapshot.itemFrameUrl,config.queueLocator || null]);
+      if(previous===signature)return result.snapshot;
+      previous=signature;
+    }else previous=null;
+    if(attempt<3)await sleep(CAPTURE_DELAY_MS);
+  }
+  throw readError("SELECTOR_FAILED","A estrutura da fila não pôde ser confirmada. Use a seleção manual.");
+}
+
 async function captureWithRetry(tabId, config) {
   let previousKey = null;
   let stableReads = 0;
@@ -561,7 +580,7 @@ async function captureAllFrames(tabId, config) {
   const frameResults = await executeInFramesBestEffort(tabId, captureFrameState, [{
     counterSelector: config.counterSelector || "", itemSelector: config.itemSelector || "",
     counterLocator: config.counterLocator || null, itemLocator: config.itemLocator || null,
-    type: config.type, visualLocator: config.visualLocator || null
+    type: config.type, visualLocator: config.visualLocator || null, queueLocator: config.queueLocator || null
   }]);
   const results = frameResults.filter((entry) => entry.ok && entry.result)
     .map((entry) => ({ frameId: entry.frameId, ...entry.result }));
@@ -572,7 +591,7 @@ async function captureAllFrames(tabId, config) {
   if (counterUrl && itemUrl && counterUrl !== itemUrl) {
     const counters = results.filter((r) => r.href === counterUrl && r.counterFound && Number.isSafeInteger(r.total));
     const lists = results.filter((r) => r.href === itemUrl && (!r.invalidItems && (r.items.length || counters[0]?.total === 0)));
-    if (counters.length !== 1 || lists.length !== 1) return { foundSomething: false, code: "SELECTOR_FAILED" };
+    if (counters.length !== 1 || lists.length !== 1) return { foundSomething: false, captureState: "INVALID_CAPTURE", code: "SELECTOR_FAILED" };
     candidates = [{ ...lists[0], total: counters[0].total, counterFound: true, counterText: counters[0].counterText,
       readyState: counters[0].readyState === "loading" ? "loading" : lists[0].readyState,
       counterFrameUrl: counterUrl, itemFrameUrl: itemUrl }];
@@ -581,11 +600,11 @@ async function captureAllFrames(tabId, config) {
     candidates = results.filter((r) => !url || r.href === url);
   }
   const valid = candidates.filter((r) => !validateSnapshot(config, r));
-  if (valid.length !== 1) return { foundSomething: false,
+  if (valid.length !== 1) return { foundSomething: false, captureState: "INVALID_CAPTURE",
     code: valid.length > 1 ? "SELECTOR_FAILED" : (candidates.map((r) => validateSnapshot(config, r)).find(Boolean) || "SELECTOR_FAILED") };
   const selected = valid[0];
-  return { foundSomething: true, snapshot: {
-    total: selected.total, counterText: selected.counterText, items: selected.items,
+  return { foundSomething: true, captureState: WebMonitorCore.classifySnapshot(config,selected), snapshot: {
+    captureState: WebMonitorCore.classifySnapshot(config,selected), structureFound: selected.structureFound, total: selected.total, counterText: selected.counterText, items: selected.items,
     ...(config.type === "visual" ? { value: selected.value } : {}),
     frameUrl: selected.href, counterFrameUrl: selected.counterFrameUrl || selected.href,
     itemFrameUrl: selected.itemFrameUrl || selected.href,
@@ -646,10 +665,12 @@ function captureFrameState(config) {
   function parseCounter(text) {
     const value = String(text || "").trim();
     const integer = "(?:\\d{1,3}(?:[.,]\\d{3})+|\\d+)";
+    if (/^(?:nenhum(?:a)? (?:chamado|registro|resultado|item)s?|no (?:records?(?: found)?|results?)|0 (?:resultados?|results?|registros?|records?))$/i.test(value)) return 0;
+    const compact = new RegExp(`^(?:${integer}\\s*[-–]\\s*)?${integer}\\s+(?:de|of)\\s+(${integer})$`, "i").exec(value);
     const plain = new RegExp(`^(${integer})$`).exec(value);
     const pagination = new RegExp(`^(?:Mostrando|Showing)\\s+${integer}\\s*[-–]\\s*${integer}\\s+(?:de|of)\\s+(${integer})$`, "i").exec(value);
     const label = new RegExp(`^(?:(${integer})\\s+(?:itens?|items?|chamados?|tickets?)|(?:itens?|items?|chamados?|tickets?)\\s*:?\\s*(${integer}))$`, "i").exec(value);
-    const matched = plain?.[1] || pagination?.[1] || label?.[1] || label?.[2];
+    const matched = plain?.[1] || compact?.[1] || pagination?.[1] || label?.[1] || label?.[2];
     if (!matched) return null;
     const number = Number(matched.replace(/[.,]/g, ""));
     return Number.isSafeInteger(number) && number >= 0 ? number : null;
@@ -703,8 +724,15 @@ function captureFrameState(config) {
 
   const counter = counterElements[0] || null;
   const counterText = readCounter(counter);
-  const total = parseCounter(counterText);
-  const values = itemElements.map(readItem);
+  let total = parseCounter(counterText);
+  const queue = config.queueLocator ? resolveLocator(config.queueLocator,"",false)[0] : null;
+  const structureFound = Boolean(queue);
+  const queueBusy = queue?.closest('[aria-busy="true"]') || queue?.querySelector('[aria-busy="true"]');
+  const emptyText = /^(?:nenhum(?:a)? (?:chamado|registro|resultado|item)s?|no (?:records?(?: found)?|results?)|0 (?:resultados?|results?|registros?|records?)|0\s+(?:de|of)\s+0)$/i;
+  const emptyEvidence = queue && !queueBusy && [queue,...queue.querySelectorAll('td,[role="status"],.empty-state,[data-testid*="empty"],[data-cy*="empty"]')]
+    .some(el=>emptyText.test(String(el.textContent || '').replace(/\s+/g,' ').trim()));
+  if (total === null && emptyEvidence) total = 0;
+  const values = itemElements.map(readItem).filter(value=>!(total===0 && structureFound && emptyEvidence && emptyText.test(value)));
   // Numeric SysAid IDs and identifiers such as INC0012345; whole-row text is not an ID.
   const validId = (value) => /^(?:[A-Za-z][A-Za-z_-]*)?\d+[A-Za-z0-9._/-]*$/.test(value);
   const invalidItems = values.filter((value) => !validId(value)).length;
@@ -714,36 +742,37 @@ function captureFrameState(config) {
     total,
     counterText,
     items,
-    counterFound: Boolean(counter) && !selectorFailed,
+    structureFound,
+    counterFound: (Boolean(counter) || Boolean(emptyEvidence)) && !selectorFailed,
     invalidItems: invalidItems + (selectorFailed ? 1 : 0),
-    readyState: document.readyState,
+    readyState: queueBusy ? "loading" : document.readyState,
     href: location.href,
     isTop: window.top === window
   };
 }
 
 function deliverySummary(delivery) {
-  const labels = { local: "Desktop", sound: "Som", telegram: "Telegram", automation: "Automação" };
+  const labels = { local: "Desktop", sound: "Som", telegram: "Telegram", automation: "Webhook", email: "Email" };
   const states = { sent: "enviado", error: "falhou", disabled: "desativado", cancelled: "cancelado" };
   return Object.entries(delivery).map(([key, value]) => `${labels[key]}: ${states[value]}`).join(" • ");
 }
 
 async function dispatchChannels(config, details) {
-  const delivery = {};
-  const providers = [
-    ["local", config.notificationsEnabled !== false, () => showNotification(details)],
-    ["sound", details.sound && details.kind === "change" && config.soundEnabled !== false, () => playSound(config, details.kind === "change" ? "queue_change" : "invalid")],
-    ["telegram", config.telegramEnabled === true, () => sendTelegramMessage(config, sanitizedText(details.kind, details.timestamp))],
-    ["automation", config.automationEnabled === true, () => sendAutomationWebhook(config, details.event, details.timestamp)]
-  ];
-  await Promise.all(providers.map(async ([channel, enabled, send]) => {
-    delivery[channel] = "disabled";
-    if (!enabled) return;
-    if (!(await checkStillCurrent(config, "alarm"))) { delivery[channel] = "cancelled"; return; }
-    try { await send(); delivery[channel] = "sent"; await setChannelSuccess(channel, config.id); }
-    catch (error) { delivery[channel] = "error"; await setChannelError(channel, safeError(error), config.id); }
-  }));
-  return delivery;
+  const type=details.kind==="change"?"QUEUE_CHANGED":details.kind==="health_error"?"MONITOR_ERROR":details.kind==="recovery"?"MONITOR_RECOVERED":null;
+  if(!type)return {local:"disabled",sound:"disabled",telegram:"disabled",email:"disabled",automation:"disabled"};
+  const connectors=WebMonitorConnectors.createAlertConnectors(config,{
+    desktop:()=>showNotification(details),sound:()=>playSound(config,"queue_change"),
+    telegram:()=>sendTelegramMessage(config,sanitizedText(details.kind,details.timestamp)),
+    webhook:()=>sendAutomationWebhook(config,details.event,details.timestamp)
+  });
+  for(const connector of connectors){
+    const send=connector.send.bind(connector);
+    connector.send=async event=>{
+      try{const result=await send(event);await setChannelSuccess(connector.id,config.id);return result;}
+      catch(error){await setChannelError(connector.id,safeError(error),config.id);throw error;}
+    };
+  }
+  return WebMonitorConnectors.dispatchConnectors(connectors,{type,at:details.timestamp},()=>checkStillCurrent(config,"alarm"));
 }
 
 async function dispatchChangeAlert(config, previous, current, comparison) {
@@ -1023,42 +1052,97 @@ async function testAutomationWebhook(monitorId) {
   }
 }
 
+const pickerWork = new Map();
+async function setPickerState(id, sessionId, state) {
+  return withStateUpdate(async()=>{
+    const {pickerSession}=await monitorStorage.get("pickerSession",id);
+    if(!pickerSession || pickerSession.id!==sessionId)return null;
+    const next={...pickerSession,state};
+    await monitorStorage.set({pickerSession:next,monitorPickerStatus:{state,at:Date.now()}},id);
+    return next;
+  });
+}
+async function activatePicker(id, sessionId) {
+  if(pickerWork.has(sessionId))return pickerWork.get(sessionId);
+  const operation=(async()=>{
+    try{
+      let {monitorConfig:config,pickerSession:session}=await monitorStorage.get(["monitorConfig","pickerSession"],id);
+      if(!session || session.id!==sessionId || Date.now()-session.at>120000 || config?.revision!==session.revision)throw new Error("Seleção expirada. Inicie novamente.");
+      await setPickerState(id,sessionId,"WAITING_FOR_TAB");
+      const tab=await ensureDedicatedTabReady(config);
+      await chrome.windows.update(tab.windowId,{focused:true});
+      await chrome.tabs.update(tab.id,{active:true});
+      await waitForStableTab(tab.id,30000);
+      await withStateUpdate(async()=>{
+        const latest=await monitorStorage.get(["monitorConfig","pickerSession"],id);
+        if(latest.pickerSession?.id!==sessionId || latest.monitorConfig?.revision!==session.revision)throw new Error("Seleção cancelada ou configuração alterada.");
+        if(latest.monitorConfig.tabId!==tab.id)await monitorStorage.set({monitorConfig:{...latest.monitorConfig,tabId:tab.id}},id);
+        session={...session,tabId:tab.id,state:"INJECTING"};
+        await monitorStorage.set({pickerSession:session,monitorPickerStatus:{state:"INJECTING",at:Date.now()}},id);
+      });
+      await executeInFramesBestEffort(tab.id,cleanupPicker,[]);
+      for(let attempt=0;attempt<3;attempt++){
+        const results=await executeInFramesBestEffort(tab.id,installPicker,[session.selectionType,sessionId,id]);
+        const ready=results.filter(r=>r.ok && r.result?.type==="PICKER_READY" && r.result.sessionId===sessionId);
+        if(ready.length){
+          const status=await setPickerState(id,sessionId,"READY");
+          if(!status){await executeInFramesBestEffort(tab.id,cleanupPicker,[]);throw new Error("Seleção cancelada.");}
+          return {ok:true,type:"PICKER_READY",frames:ready.length};
+        }
+        if(attempt<2){await waitForStableTab(tab.id,30000);await sleep(450);}
+      }
+      throw new Error("O seletor não confirmou prontidão. Verifique as permissões dos frames.");
+    }catch(error){
+      let staleTab;
+      await withStateUpdate(async()=>{
+        const {pickerSession}=await monitorStorage.get("pickerSession",id);
+        if(pickerSession?.id===sessionId){staleTab=pickerSession.tabId;await monitorStorage.set({pickerSession:null,monitorPickerStatus:{state:"ERROR",message:safeError(error),at:Date.now()}},id);}
+      });
+      if(staleTab)await executeInFramesBestEffort(staleTab,cleanupPicker,[]).catch(()=>{});
+      throw error;
+    }
+  })();
+  pickerWork.set(sessionId,operation);
+  try{return await operation;}finally{pickerWork.delete(sessionId);}
+}
+async function resumePickers(tabId) {
+  await storageReady;
+  for(const {id} of await monitorStorage.catalog()){
+    const {pickerSession}=await monitorStorage.get("pickerSession",id);
+    if(pickerSession && (!tabId || pickerSession.tabId===tabId))await activatePicker(id,pickerSession.id).catch(()=>{});
+  }
+}
+chrome.tabs.onUpdated?.addListener((tabId,change)=>{if(change.status==="complete")void resumePickers(tabId);});
+chrome.webNavigation.onCompleted?.addListener(details=>{if(details.frameId>0)void resumePickers(details.tabId);});
+chrome.runtime.onStartup.addListener(()=>{void resumePickers();});
 async function beginElementPicker(selectionType, monitorId) {
-  if (!["counter", "items", "visual"].includes(selectionType)) throw new Error("Tipo de seleção inválido.");
-
-  const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
-  if (!monitorConfig?.boundUrl) throw new Error("Crie primeiro a aba dedicada.");
-
-  const tab = await ensureDedicatedTabReady(monitorConfig, { refresh: false });
-  if (!tab) throw new Error("Não foi possível preparar a aba dedicada para seleção.");
-
-  // Primeiro remove pickers antigos sem usar allFrames. Falhas em um frame não derrubam os demais.
-  await executeInFramesBestEffort(tab.id, cleanupPicker, []);
-  const session = await withStateUpdate(async () => {
-    const { monitorConfig: latest } = await monitorStorage.get("monitorConfig", monitorId);
-    if (latest?.revision !== monitorConfig.revision) throw new Error("A configuração mudou. Abra o seletor novamente.");
-    const current = tab.id === latest.tabId ? latest : await updateMonitorConfig({ tabId: tab.id }, monitorId);
-    const value = { id: crypto.randomUUID(), selectionType, tabId: tab.id, revision: current.revision, at: Date.now() };
-    await monitorStorage.set({ pickerSession: value }, monitorId);
+  if(!["counter","items","visual"].includes(selectionType))throw new Error("Tipo de seleção inválido.");
+  const {monitorConfig:config}=await monitorStorage.get("monitorConfig",monitorId);
+  if(!config?.boundUrl)throw new Error("Use a página atual primeiro.");
+  const session=await withStateUpdate(async()=>{
+    const {monitorConfig:latest}=await monitorStorage.get("monitorConfig",config.id);
+    const value={id:crypto.randomUUID(),selectionType,tabId:latest.tabId,revision:latest.revision,state:"ARMING",at:Date.now()};
+    await monitorStorage.set({pickerSession:value,monitorPickerStatus:{state:"ARMING",at:Date.now()}},config.id);
     return value;
   });
-  const injections = await executeInFramesBestEffort(tab.id, installPicker, [selectionType, session.id, monitorConfig.id]);
-  const successCount = injections.filter((entry) => entry.ok).length;
-
-  if (!successCount) {
-    const firstError = injections.find((entry) => !entry.ok)?.error || "Nenhum frame acessível.";
-    throw new Error(`Não consegui ativar o seletor visual nesta página. ${firstError}`);
-  }
-
-  await chrome.windows.update(tab.windowId, { focused: true });
-  await chrome.tabs.update(tab.id, { active: true });
-  return { ok: true, frames: successCount };
+  return activatePicker(config.id,session.id);
+}
+async function cancelPicker(message,sender){
+  let tabId;
+  await withStateUpdate(async()=>{
+    const {pickerSession:s}=await monitorStorage.get("pickerSession",message.monitorId);
+    if(!s || s.id!==message.sessionId || s.tabId!==sender.tab?.id)throw new Error("Sessão inválida.");
+    tabId=s.tabId;
+    await monitorStorage.set({pickerSession:null,monitorPickerStatus:{state:"CANCELLED",at:Date.now()}},message.monitorId);
+  });
+  await executeInFramesBestEffort(tabId,cleanupPicker,[]);
+  return {ok:true};
 }
 
 async function handleElementSelected(message, sender) {
   await withStateUpdate(async () => {
     const { monitorConfig, pickerSession } = await monitorStorage.get(["monitorConfig", "pickerSession"], message.monitorId);
-    if (!monitorConfig || !pickerSession || sender.tab?.id !== pickerSession.tabId ||
+    if (!monitorConfig || !pickerSession || pickerSession.state!=="READY" || sender.tab?.id !== pickerSession.tabId ||
         message.sessionId !== pickerSession.id || message.selectionType !== pickerSession.selectionType ||
         pickerSession.revision !== monitorConfig.revision || Date.now() - pickerSession.at > 120000 ||
         !Number.isInteger(sender.frameId) || !isInjectableFrameUrl(sender.url)) throw new Error("Seleção expirada ou de outra aba. Abra o seletor novamente.");
@@ -1068,6 +1152,7 @@ async function handleElementSelected(message, sender) {
         typeof locator.targetSelector !== "string" || !locator.targetSelector || locator.targetSelector.length > 2000) {
       throw new Error("Seletor inválido.");
     }
+    await monitorStorage.set({monitorPickerStatus:{state:"SELECTED",at:Date.now()}},message.monitorId);
     if (message.selectionType === "visual") {
       if (monitorConfig.type !== "visual") throw new Error("Este monitor não está no modo visual.");
       await monitorStorage.set({ pickerSession: null, monitorSelectionDraft: {
@@ -1078,7 +1163,9 @@ async function handleElementSelected(message, sender) {
       return;
     }
     const field = message.selectionType === "counter" ? "counter" : "item";
-    await updateMonitorConfig({ [`${field}Selector`]: locator.targetSelector,
+    const queuePatch=message.selectionType==="items" && locator.queueLocator && typeof locator.queueLocator.targetSelector==="string" && Array.isArray(locator.queueLocator.shadowChain)
+      ? {queueLocator:{...locator.queueLocator,frameUrl:sender.url}} : {};
+    await updateMonitorConfig({ ...queuePatch, [`${field}Selector`]: locator.targetSelector,
       [`${field}Locator`]: { ...locator, frameUrl: sender.url } }, message.monitorId);
     await monitorStorage.set({ lastSelection: {
       type: message.selectionType, selector: locator.targetSelector,
@@ -1086,6 +1173,11 @@ async function handleElementSelected(message, sender) {
     } }, message.monitorId);
   });
   await executeInFramesBestEffort(sender.tab.id, cleanupPicker, []);
+  if(message.monitorId)await monitorStorage.select(message.monitorId);
+  try {
+    if(!chrome.action.openPopup)throw new Error("Popup indisponível");
+    await chrome.action.openPopup();
+  }catch{ await chrome.tabs.create({url:chrome.runtime.getURL("popup.html"),active:true}); }
   return { ok: true };
 }
 
@@ -1161,13 +1253,13 @@ function installPicker(selectionType, sessionId, monitorId) {
   function stableAttributes(element) {
     const names = new Set(["data-cy", "data-testid", "data-test", "data-qa", "name", "aria-label", "role"]);
     for (const name of element.getAttributeNames()) if (/^(data-|aria-)/.test(name) && !/(value|count|state|index|busy|selected|expanded|checked)/.test(name)) names.add(name);
-    return [...names].map(name => [name, element.getAttribute(name)]).filter(([, value]) => value && value.length < 120);
+    return [...names].map(name => [name, element.getAttribute(name)]).filter(([, value]) => value && value.length < 120 && !/\d{4,}|^\d/.test(value));
   }
 
   function uniqueSelectorInRoot(element, root) {
     if (!(element instanceof Element) || !root?.querySelectorAll) return "";
 
-    if (element.id) {
+    if (element.id && !/\d{4,}|[a-f0-9]{12,}/i.test(element.id)) {
       const selector = `#${cssEscape(element.id)}`;
       if (countInRoot(root, selector) === 1) return selector;
     }
@@ -1192,7 +1284,7 @@ function installPicker(selectionType, sessionId, monitorId) {
     let current = element;
     while (current && current instanceof Element) {
       let part = current.tagName.toLowerCase();
-      if (current.id) {
+      if (current.id && !/\d{4,}|[a-f0-9]{12,}/i.test(current.id)) {
         part = `#${cssEscape(current.id)}`;
         parts.unshift(part);
         break;
@@ -1220,7 +1312,7 @@ function installPicker(selectionType, sessionId, monitorId) {
     for (const [name, value] of stableAttributes(element)) {
       const selector = `${tag}[${name}="${attrEscape(value)}"]`;
       const count = countInRoot(root, selector);
-      if (count > 1) candidates.push({ selector, count, score: 100 - Math.min(count, 50) / 10 });
+      if (count > 0) candidates.push({ selector, count, score: 100 - Math.min(count, 50) / 10 });
     }
 
     const classes = [...element.classList].filter((name) => !name.startsWith("__web_monitor")).slice(0, 3);
@@ -1306,7 +1398,22 @@ function installPicker(selectionType, sessionId, monitorId) {
     candidates.sort((a, b) => b.score - a.score);
     if (candidates.length) return candidates[0];
 
-    // Fila com apenas um item: aceita seletor único do ancestral mais semântico.
+    // A single ticket still represents a repeatable column/list, never that ticket's ID.
+    const cell=path.find(element=>element.matches('td'));
+    if(cell){
+      const table=cell.closest('table');const root=cell.getRootNode();
+      if(table){const base=uniqueSelectorInRoot(table,root);const index=[...cell.parentElement.children].indexOf(cell)+1;
+        const selector=base+' tbody tr > td:nth-child('+index+'):not([colspan])';
+        const count=countInRoot(root,selector);if(base && count)return {element:cell,selector,count,score:1};
+      }
+    }
+    const item=path.find(element=>element.matches('li'));
+    if(item && item.parentElement?.matches('ul,ol')){
+      const root=item.getRootNode(),base=uniqueSelectorInRoot(item.parentElement,root),selector=base+' > li';
+      if(base)return {element:item,selector,count:countInRoot(root,selector),score:1};
+    }
+    // Last resort; structural instability is reported in the locator.
+
     for (const element of path) {
       const root = element.getRootNode();
       const selector = uniqueSelectorInRoot(element, root);
@@ -1346,7 +1453,9 @@ function installPicker(selectionType, sessionId, monitorId) {
   }
 
   function onMove(event) { updateOverlay(eventElements(event)[0] || event.target); }
-  function onKey(event) { if (event.key === "Escape") cleanupLocal(); }
+  function onKey(event) { if (event.key === "Escape") {
+    cleanupLocal();chrome.runtime.sendMessage({type:"PICKER_CANCELLED",sessionId,monitorId}).catch(()=>{});
+  } }
   function onClick(event) {
     const path = eventElements(event);
     if (!path.length) return;
@@ -1361,6 +1470,10 @@ function installPicker(selectionType, sessionId, monitorId) {
       : selectionType === "counter" ? chooseCounter(path) : chooseItems(path);
     if (!chosen) return;
     const locator = buildLocator(chosen.element, chosen.selector, selectionType === "items" ? "list" : "single", chosen.count || 1);
+    if(selectionType==="items"){
+      const container=chosen.element.closest('table,[role="grid"],[role="list"],ul,ol');
+      if(container){const root=container.getRootNode();const targetSelector=uniqueSelectorInRoot(container,root);if(targetSelector)locator.queueLocator={targetSelector,shadowChain:shadowChainFor(container)};}
+    }
     const sampleText = chosen.element.getAttribute?.("value") || chosen.element.textContent?.trim() || chosen.element.getAttribute?.("aria-label") || "";
 
     chrome.runtime.sendMessage({
@@ -1372,14 +1485,17 @@ function installPicker(selectionType, sessionId, monitorId) {
       locator,
       matchedCount: chosen.count || 1,
       sampleText: String(sampleText).slice(0, 160)
-    }).catch(() => {});
-    cleanupLocal();
+    }).then(response=>{
+      if(response?.ok){cleanupLocal();const result=document.createElement('div');result.id=BANNER_ID;result.textContent='✓ Elemento selecionado. Configuração disponível no Web Monitor.';Object.assign(result.style,{position:'fixed',top:'16px',left:'16px',zIndex:'2147483647',background:'#172a43',color:'#fff',padding:'12px'});document.documentElement.appendChild(result);}
+      else banner.textContent=response?.error || 'Não foi possível confirmar. Tente novamente.';
+    }).catch(()=>{banner.textContent='Não foi possível confirmar. Abra o Web Monitor.';});
   }
 
   globalThis.__webMonitorPicker = { onMove, onKey, onClick, BANNER_ID, OVERLAY_ID };
   document.addEventListener("pointermove", onMove, true);
   document.addEventListener("keydown", onKey, true);
   document.addEventListener("click", onClick, true);
+  return {type:"PICKER_READY",sessionId};
 }
 
 function cleanupPicker() {

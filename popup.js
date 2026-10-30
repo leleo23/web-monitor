@@ -122,7 +122,7 @@ async function beginPicker(type) {
   if (!(await saveConfig({ message: false }))) return;
   toast("Abrindo seletor visual…");
   const response = await send("BEGIN_ELEMENT_PICKER", { selectionType: type });
-  if (!response.ok) return toast(response.error || "Não foi possível iniciar o seletor visual.", "error");
+  if (!response.ok || response.type!=="PICKER_READY") return toast(response.error || "O seletor não confirmou prontidão.", "error");
   window.close();
 }
 
@@ -284,6 +284,7 @@ function renderChannels(status, config) {
   const defs = [
     ["Desktop", status?.local, config?.notificationsEnabled !== false, true],
     ["Som", status?.sound, true, config?.soundEnabled !== false],
+    ["Email", {status:'unavailable'}, false, false],
     ["Telegram", status?.telegram, Boolean(config?.telegramBotToken && config?.telegramChatId), config?.telegramEnabled === true],
     ["Automação", status?.automation, Boolean(config?.automationWebhookUrl), config?.automationEnabled === true]
   ];
@@ -292,7 +293,7 @@ function renderChannels(status, config) {
     const div = document.createElement("div");
     const error = channel?.status === "error";
     div.className = `channel ${error ? "error" : (configured && enabled ? "ok" : "")}`;
-    const state = error ? "Erro" : !configured ? "Não configurado" : !enabled ? "Desativado" : "Ativo";
+    const state = channel?.status === 'unavailable' ? 'Indisponível' : error ? "Erro" : !configured ? "Não configurado" : !enabled ? "Desativado" : "Ativo";
     const detail = error ? (channel?.lastError || "Falha no último envio") : channel?.lastSuccessAt ? `Último envio ${fmtTime(channel.lastSuccessAt)}` : state;
     div.innerHTML = `<strong>${name} · ${state}</strong><span></span>`;
     div.querySelector("span").textContent = detail;
@@ -378,6 +379,7 @@ async function refresh() {
   renderHome(response.monitors || []);
   renderInsights(response.insights);
   renderSelection(response.selectionDraft);
+  if(response.pickerStatus?.state==="ERROR") toast(response.pickerStatus.message || "Falha ao ativar seletor.","error");
   if (response.selectionDraft && !response.selectionDraft.previewToken && !validatingSelection) {
     activateTab('setup');
     await revalidateSelection();

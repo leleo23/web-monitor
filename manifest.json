@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Web Monitor",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "minimum_chrome_version": "116",
   "description": "Monitor genérico de filas web com DOM, iframes e Shadow DOM, alertas locais, Telegram e automações via webhook.",
   "permissions": [

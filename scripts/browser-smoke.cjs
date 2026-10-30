@@ -82,6 +82,34 @@ const { harness, root } = require('../tests/helpers.cjs');
     await page.evaluate(()=>{document.body.innerHTML='<x-list></x-list>';document.querySelector('x-list').attachShadow({mode:'open'}).innerHTML='<span id="count">Mostrando 1-2 de 2</span><table><tr><td data-cy="id">370415</td><td data-cy="id">370416</td></tr></table>'});
     detected=await page.evaluate(h.context.detectQueueFrame);assert.deepEqual(detected[0].counterLocator.shadowChain,['x-list']);
     passed('detector preserves Shadow DOM source paths');
+    await page.setContent('<span id="pagination_toggle">1 de 1</span><table id="queue"><thead><tr><th>ID</th></tr></thead><tbody><tr><td data-cy="id">402123</td></tr></tbody></table>');
+    detected=await page.evaluate(h.context.detectQueueFrame);
+    assert.ok(detected.length);const resilient={...detected[0],type:'queue'};
+    assert.equal(resilient.itemSelector.includes('402123'),false);
+    result=await capture(resilient);assert.equal(result.total,1);assert.deepEqual(result.items,['402123']);
+    await page.evaluate(()=>{document.querySelector('tbody').replaceChildren();document.querySelector('#pagination_toggle').textContent='0 de 0'});
+    result=await capture(resilient);assert.equal(result.total,0);assert.deepEqual(result.items,[]);assert.equal(h.context.WebMonitorCore.classifySnapshot(resilient,result),'VALID_EMPTY');
+    passed('one-ticket automatic configuration survives an empty queue with compact pagination');
+    detected=await page.evaluate(h.context.detectQueueFrame);assert.ok(detected.length);result=await capture({...detected[0],type:'queue'});assert.equal(result.total,0);
+    passed('empty startup learns the persistent ID column when evidence is sufficient');
+    await page.evaluate(()=>{document.querySelector('#pagination_toggle').remove();document.querySelector('tbody').innerHTML='<tr><td colspan="2">No records found</td></tr>'});
+    result=await capture(resilient);assert.equal(result.total,0);assert.equal(result.structureFound,true);
+    passed('a scoped empty marker remains valid when pagination is absent');
+    for(const text of ['0 de 0','0 resultados','Nenhum chamado','No records found','No results']){
+      await page.evaluate(text=>{document.querySelector('tbody').innerHTML='<tr><td colspan="2"></td></tr>';document.querySelector('td').textContent=text},text);
+      result=await capture(resilient);assert.equal(h.context.WebMonitorCore.classifySnapshot(resilient,result),'VALID_EMPTY');
+    }
+    passed('all requested scoped empty-state phrases are valid operational states');
+    await page.evaluate(()=>document.querySelector('#queue').remove());
+    result=await capture(resilient);assert.equal(h.context.WebMonitorCore.classifySnapshot(resilient,result),'INVALID_CAPTURE');
+    passed('missing queue structure is not converted into a healthy empty queue');
+    await page.setContent('<div>No results</div>');assert.deepEqual(await page.evaluate(h.context.detectQueueFrame),[]);
+    passed('empty text alone cannot fake a successful automatic configuration');
+    await page.setContent('<div id="pager">1-3 de 3</div><table id="tickets"><tbody><tr><td data-cy="id">402123</td></tr><tr><td data-cy="id">402124</td></tr><tr><td data-cy="id">402125</td></tr></tbody></table>');
+    detected=await page.evaluate(h.context.detectQueueFrame);assert.ok(detected.length);const reusable={...detected[0],type:'queue'};
+    await page.evaluate(()=>{document.querySelector('tbody').innerHTML='<tr><td data-cy="id">INC001</td></tr><tr><td data-cy="id">INC002</td></tr><tr><td data-cy="id">INC003</td></tr>'});
+    result=await capture(reusable);assert.deepEqual(result.items,['INC001','INC002','INC003']);
+    passed('complete ticket replacement keeps structural locators reusable');
 
     await page.setContent('<div id="target" data-testid="queue-indicator">Critical incidents: 3</div>');
     await page.evaluate(() => { window.chrome={runtime:{getManifest:()=>({version:"0.6.0"}),sendMessage:async message=>{window.sentSelection=message;return {ok:true}}}}; });
@@ -124,7 +152,7 @@ const { harness, root } = require('../tests/helpers.cjs');
     });
     await ui.goto(`http://127.0.0.1:${server.address().port}/popup.html`);
     await ui.waitForFunction(()=>document.querySelector('#monitorStatus').textContent==='Monitorando');
-    assert.equal(await ui.locator('.channel').count(),4);
+    assert.equal(await ui.locator('.channel').count(),5);
     passed('real popup initializes with separate Desktop and audio status');
 
     await ui.locator('[data-tab="setup"]').click();

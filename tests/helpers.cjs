@@ -28,9 +28,9 @@ function harness() {
     action: { setBadgeText: async () => {} },
     notifications: { create: async value => { deliveries.push(value); } },
     permissions: { contains: async () => true },
-    tabs: { get: async id => ({ id, status: 'complete', url: 'https://fixture.invalid/queue' }),
+    tabs: { onUpdated:listen('tabUpdated'),get: async id => ({ id, status: 'complete', url: 'https://fixture.invalid/queue' }),
       query: async () => [], create: async () => ({ id: 1 }), update: async () => {}, reload: async () => {} },
-    webNavigation: { getAllFrames: async () => [{ frameId: 0, url: 'https://fixture.invalid/queue', errorOccurred: false }] },
+    webNavigation: { onCompleted:listen('navCompleted'),getAllFrames: async () => [{ frameId: 0, url: 'https://fixture.invalid/queue', errorOccurred: false }] },
     windows: { update: async () => {} },
     offscreen: { createDocument: async () => {} }
   };

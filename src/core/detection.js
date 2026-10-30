@@ -48,6 +48,7 @@
   function readingKey(config) {
     const source = [config.boundUrl || "", config.counterSelector || "", config.itemSelector || "",
       config.counterLocator || null, config.itemLocator || null];
+    if (config.queueLocator) source.push("queue",config.queueLocator);
     if (config.type === "visual") source.push("visual", config.visualLocator || null);
     return JSON.stringify(source);
   }
@@ -60,6 +61,7 @@
   function validateSnapshot(config, snapshot) {
     if (snapshot.readyState === "loading") return "PAGE_LOADING";
     if (config.type === "visual") return snapshot.visualFound && typeof snapshot.value === "string" && snapshot.value.trim() ? null : "SELECTOR_FAILED";
+    if (config.queueLocator && !snapshot.structureFound) return "SELECTOR_FAILED";
     const counterRequired = Boolean(config.counterSelector || config.counterLocator);
     const itemsRequired = Boolean(config.itemSelector || config.itemLocator);
     if (!counterRequired && !itemsRequired) return "SELECTOR_FAILED";
@@ -70,7 +72,9 @@
     return null;
   }
 
-  const api = { compareSnapshots, shouldAlert, buildHistoryEvent, readingKey, snapshotKey, validateSnapshot };
+  function classifySnapshot(config,snapshot) { return validateSnapshot(config,snapshot) ? "INVALID_CAPTURE" : snapshot.total === 0 ? "VALID_EMPTY" : "VALID_WITH_ITEMS"; }
+
+  const api = { classifySnapshot, compareSnapshots, shouldAlert, buildHistoryEvent, readingKey, snapshotKey, validateSnapshot };
   root.WebMonitorCore = api;
   if (typeof module !== "undefined" && module.exports) module.exports = api;
 })(globalThis);

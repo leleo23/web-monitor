@@ -13,7 +13,7 @@ test('only the popup can read status or change configuration', async () => {
   assert.equal(allowed.ok,true);
 });
 test('picker messages from another tab/session are rejected', async () => {
-  const h=harness();h.store.pickerSession={id:'session',tabId:1,revision:1,selectionType:'items',at:100000};
+  const h=harness();h.store.pickerSession={state:'READY',id:'session',tabId:1,revision:1,selectionType:'items',at:100000};
   h.context.payload={sessionId:'wrong',selectionType:'items',locator:{shadowChain:[],targetSelector:'.id'}};
   h.context.sender={tab:{id:2},url:h.store.monitorConfig.boundUrl,frameId:0};
   await assert.rejects(h.run('handleElementSelected(payload,sender)'));
@@ -21,7 +21,7 @@ test('picker messages from another tab/session are rejected', async () => {
 });
 test('valid picker session records frame provenance and invalidates previous baseline', async () => {
   const h=harness();h.store.monitorSnapshot=h.snapshot(1,['1']);
-  h.store.pickerSession={id:'session',tabId:1,revision:1,selectionType:'items',at:100000};
+  h.store.pickerSession={state:'READY',id:'session',tabId:1,revision:1,selectionType:'items',at:100000};
   h.context.payload={sessionId:'session',selectionType:'items',locator:{shadowChain:[],targetSelector:'.new-id'}};
   h.context.sender={tab:{id:1},url:'https://fixture.invalid/frame',frameId:2};
   h.run('executeInFramesBestEffort=async()=>[]');
@@ -30,7 +30,7 @@ test('valid picker session records frame provenance and invalidates previous bas
   assert.equal(h.store.monitorSnapshot,null);assert.equal(h.store.pickerSession,null);
 });
 test('expired picker session does not modify configuration', async () => {
-  const h=harness();h.store.pickerSession={id:'session',tabId:1,revision:1,selectionType:'items',at:100000};h.tick(121000);
+  const h=harness();h.store.pickerSession={state:'READY',id:'session',tabId:1,revision:1,selectionType:'items',at:100000};h.tick(121000);
   h.context.payload={sessionId:'session',selectionType:'items',locator:{shadowChain:[],targetSelector:'.new'}};
   h.context.sender={tab:{id:1},url:h.store.monitorConfig.boundUrl,frameId:0};
   await assert.rejects(h.run('handleElementSelected(payload,sender)'));assert.equal(h.store.monitorConfig.itemSelector,'.id');

@@ -197,7 +197,14 @@
         <div class="actions"><button id="saveTelegramBtn" class="secondary">Salvar</button><button id="testTelegramBtn" class="ghost">Testar e conectar</button></div></details>
       </section>
 
-      <section class="card"><p>Email · Em breve &nbsp; Teams · Em breve &nbsp; Slack · Em breve</p></section>
+      <section class="card integration-card"><h2>Email</h2><p>Desativado — backend de verificação e envio ainda não disponível.</p>
+        <label for="emailRecipient">Destinatário</label><input id="emailRecipient" type="email" placeholder="usuario@empresa.com" disabled>
+        <button class="secondary full" disabled>Verificar email — indisponível</button>
+        <label class="toggle"><input type="checkbox" disabled> Mudança na fila</label>
+        <label class="toggle"><input type="checkbox" disabled> Erro do monitor</label>
+        <label class="toggle"><input type="checkbox" disabled> Recuperação do monitor</label>
+        <p>A conexão exigirá código enviado ao destinatário. Nenhum endereço é salvo ou enviado nesta versão.</p></section>
+      <section class="card"><p>Teams · Em breve &nbsp; Slack · Em breve</p></section>
       <section class="card integration-card">
         <details><summary>Webhook avançado</summary><div class="integration-head"><div class="integration-icon">⚡</div><div><h2>Webhook / automações</h2><p>Dispara um evento sanitizado para um endpoint HTTPS configurado por você.</p></div></div>
         <div class="privacy">O payload contém apenas o tipo do evento e horário. O fluxo pode usar “Send an email (V2)” ou publicar no Teams.</div>
