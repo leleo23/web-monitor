@@ -1,4 +1,4 @@
-# Web Monitor v0.7.0
+# Web Monitor v0.8.0
 
 Extensão Chrome Manifest V3 para filas web, com contador, IDs e alertas Desktop, som, Telegram e webhook. Requer Chrome **116+**, navegador aberto e sessão válida na fila.
 
@@ -8,7 +8,7 @@ Extensão Chrome Manifest V3 para filas web, com contador, IDs e alertas Desktop
 2. Abra `chrome://extensions` e ative **Modo do desenvolvedor**.
 3. Clique em **Carregar sem compactação** e selecione a pasta que contém `manifest.json`.
 
-Para atualizar, copie os arquivos novos, incluindo as pastas `src` e `sounds`, para a **mesma pasta da instalação anterior** e clique em **Recarregar** no cartão da extensão. Manter a mesma pasta/ID evita criar uma instalação com configurações separadas. A migração da v0.7.0 mantém a fila existente, histórico e preferências. A primeira leitura cria um baseline seguro quando a configuração da fonte mudou.
+Para atualizar, copie os arquivos novos, incluindo as pastas `src` e `sounds`, para a **mesma pasta da instalação anterior** e clique em **Recarregar** no cartão da extensão. Manter a mesma pasta/ID evita criar uma instalação com configurações separadas. A migração da v0.8.0 mantém a fila existente, histórico e preferências. A primeira leitura cria um baseline seguro quando a configuração da fonte mudou.
 
 Não precisa de Node, npm ou servidor para usar a extensão. As dependências são apenas ferramentas de desenvolvimento.
 
@@ -109,3 +109,14 @@ Se não houver sugestão segura, use **Selecionar manualmente**. Seletores ficam
 **Exportar configuração** transfere somente preferências validadas (tipo, intervalo, flags e áudio). Por privacidade, não inclui nem nome livre, URLs ou seletores, que também podem conter segredos. Importar cria um monitor pausado e exige confirmar a página/elementos novamente. Credenciais existentes de outros monitores não são alteradas.
 
 Veja docs/RC1-SYNC.md e docs/DELIVERY-0.7.md para reconciliação, arquivos e limites de validação. Chrome mínimo 116 mantido; a permissão permanente tabs foi substituída por activeTab com concessões opcionais por origem.
+
+
+## Atualização 0.8.0 — filas vazias e picker
+
+Refaça a detecção uma vez para que configurações antigas ganhem o vínculo explícito com o container. A extensão salva a estrutura (tabela/grid, coluna e paginação), sem incorporar o ID do chamado ou o texto do contador no seletor. Com evidência suficiente, é possível configurar uma fila já vazia. Sem essa evidência, continua sendo necessário selecionar manualmente.
+
+`1 de 1`, `1-1 de 1`, `0 de 0`, `0 resultados`, `Nenhum chamado`, `No records found` e `No results` são reconhecidos. Mensagens de vazio são aceitas somente dentro do container vinculado, sem sinal de loading. Container ausente ou página carregando continuam inválidos; não viram fila vazia por suposição. A proteção de zero temporário permanece: transição positiva → zero aguarda confirmação posterior antes de substituir a leitura válida.
+
+O picker persiste a intenção no worker, foca a aba antes de injetar, recebe `PICKER_READY` somente após instalar os listeners e recupera a seleção após navegação de frame. ESC cancela a sessão em todos os frames. Depois de selecionar, tenta abrir o popup automaticamente; se a API não estiver disponível, abre a configuração em uma aba da extensão. Isso pode mudar levemente o retorno visual em versões antigas do Chrome.
+
+**Email está desativado.** A UI não armazena ou envia endereço e não pode marcar conexão verificada. O connector, interface comum de canais e contrato de backend são preparação. Veja docs/EMAIL-API.md para verificação por código, sessão autenticada, rate limiting e privacidade necessários antes de habilitar. Não há SMTP, API key global ou servidor de e-mail implantado.

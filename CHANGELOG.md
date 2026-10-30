@@ -1,5 +1,15 @@
 # Changelog
 
+## 0.8.0
+
+- Estrutura persistente da fila/coluna separada de conteúdo transitório, incluindo configuração com zero quando há evidência.
+- Paginação compacta e estados VALID_WITH_ITEMS, VALID_EMPTY, INVALID_CAPTURE.
+- Validação estrutural antes de apresentar/confirmar sugestões, sem exigir IDs idênticos.
+- Picker com sessão persistente, foco antes da injeção, handshake READY, recuperação por navegação, cancelamento e retorno automático à configuração.
+- EmailConnector desativado, contrato de backend verificado e interface comum de canais com isolamento de falhas.
+- Mantidos baseline, confirmação de zero, retries, Shadow DOM, frames, escopo de abas e áudio restrito.
+
+
 ## 0.7.0
 
 ### Funcionalidades (commit separado)

@@ -1,4 +1,4 @@
-# Tratamento de dados — versão 0.7.0
+# Tratamento de dados — versão 0.8.0
 
 Descreve o código atual; a política para publicação na loja ainda precisa de revisão.
 
@@ -24,3 +24,5 @@ Pause para interromper novas verificações; desative canais para futuros envios
 Permissões podem ser revogadas nas configurações da extensão. Requisições iniciadas e notificações entregues não podem ser desfeitas pela pausa.
 
 Exportação portátil inclui apenas preferências validadas, sem nome livre, URL, seletores, credenciais, histórico ou conteúdo. A detecção e seus exemplos permanecem no perfil local. Testar alertas é uma ação explícita que envia eventos de teste aos canais ativados.
+
+O novo vínculo de container e a sessão temporária do picker ficam somente no perfil local. Seleção/cancelamento limpa a sessão; erros/expiração também removem intenção e overlays quando acessíveis. Email continua indisponível: nenhuma verificação ou mensagem real é disparada.

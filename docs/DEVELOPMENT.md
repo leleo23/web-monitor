@@ -54,3 +54,12 @@ A validação de reinício usa uma nova instância do worker com o storage persi
 ## v0.7.0
 
 Detector autocontido em src/core/detector.js, injetado best-effort por frame. Confirmação reexecuta a captura validada, com revisão para rejeitar sugestões antigas. src/core/portable.js tem allowlist estrita de preferências sem texto livre. TEST_MONITOR não chama runCheck; TEST_ALL_ALERTS é explícito e não muda baseline. Chrome mínimo 116 permanece por getContexts. Audio exige reason queue_change/manual_test no worker e offscreen; saúde/recuperação nunca tocam.
+
+
+## 0.8.0 — captura estrutural e sessões
+
+`queueLocator` é o container persistente, incluído em readingKey quando configurado. validateSnapshot mantém códigos de erro; classifySnapshot explicita VALID_WITH_ITEMS/VALID_EMPTY/INVALID_CAPTURE. O parser continua autocontido na função injetada. Empty markers são escopados ao container e recusados com aria-busy/loading. validateQueueStructure exige duas capturas válidas no mesmo contexto, sem comparar os IDs; captureWithRetry continua exigindo estabilidade de valores para efetivar snapshots operacionais.
+
+Picker: ARMING → WAITING_FOR_TAB → INJECTING → READY → SELECTED/CANCELLED/ERROR. Estado no storage por monitor; promise single-flight por sessão evita injeções concorrentes. READY vem do retorno da função injetada após instalar os listeners. Navegação de tabs/frames permite reinjeção sem depender do popup. Falhas removem sessão e tentam limpar overlays. Abertura de configuração usa popup quando disponível, senão aba interna de extensão autenticada pelo ID/URL; páginas web continuam sem poder enviar comandos de configuração.
+
+Canais: createAlertConnectors produz interfaces id/status/isConfigured/test/send; dispatchConnectors isola falhas e limita Sound aos eventos permitidos. EmailConnector default não possui transporte e fica DISABLED. Contrato e testes não significam existência de backend; ver EMAIL-API.md.
