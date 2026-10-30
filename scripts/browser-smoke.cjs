@@ -63,7 +63,7 @@ const { harness, root } = require('../tests/helpers.cjs');
     passed('invalid CSS selector rejects the capture');
 
     await page.setContent('<div id="target" data-testid="queue-indicator">Critical incidents: 3</div>');
-    await page.evaluate(() => { window.chrome={runtime:{sendMessage:async message=>{window.sentSelection=message;return {ok:true}}}}; });
+    await page.evaluate(() => { window.chrome={runtime:{getManifest:()=>({version:"0.6.0"}),sendMessage:async message=>{window.sentSelection=message;return {ok:true}}}}; });
     await page.evaluate(h.context.installPicker,'visual');
     await page.locator('#target').hover();
     assert.equal(await page.locator('#__web_monitor_picker_overlay').evaluate(el=>el.style.display),'block');
@@ -96,7 +96,7 @@ const { harness, root } = require('../tests/helpers.cjs');
     await ui.exposeFunction('mockExtensionMessage', async message => h.json(await h.run(`handleMessage(${JSON.stringify(message)})`)));
     await ui.addInitScript(() => {
       window.chrome = {
-        runtime:{sendMessage: message=>window.mockExtensionMessage(message)},
+        runtime:{getManifest:()=>({version:"0.6.0"}),sendMessage: message=>window.mockExtensionMessage(message)},
         storage:{onChanged:{addListener:fn=>{window.storageChanged=fn}}},
         permissions:{contains:async()=>true,request:async()=>true}
       };

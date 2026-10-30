@@ -3,12 +3,12 @@
   "name": "Web Monitor",
   "version": "0.6.0",
   "minimum_chrome_version": "116",
-  "description": "Monitor gen\u00e9rico de filas web com DOM, iframes e Shadow DOM, alertas locais, Telegram e automa\u00e7\u00f5es via webhook.",
+  "description": "Monitor genérico de filas web com DOM, iframes e Shadow DOM, alertas locais, Telegram e automações via webhook.",
   "permissions": [
     "storage",
     "alarms",
     "notifications",
-    "tabs",
+    "activeTab",
     "scripting",
     "offscreen",
     "webNavigation"
@@ -35,5 +35,8 @@
     "32": "icon32.png",
     "48": "icon48.png",
     "128": "icon128.png"
+  },
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'self'"
   }
 }

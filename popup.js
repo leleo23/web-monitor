@@ -29,8 +29,8 @@ function fmtTime(ts) {
 
 function getFormConfig() {
   return {
-    name: ui.monitorName.value.trim() || "Monitor",
-    intervalMinutes: Math.max(1, Number(ui.intervalMinutes.value) || 5),
+    name: ui.monitorName.value.trim() || "Meu monitor",
+    intervalMinutes: Math.min(1440, Math.max(1, Number(ui.intervalMinutes.value) || 5)),
     counterSelector: ui.counterSelector.value.trim(),
     itemSelector: ui.itemSelector.value.trim(),
     alertOnNewItem: ui.alertOnNewItem.checked,
@@ -56,6 +56,16 @@ async function send(type, payload = {}) {
 
 async function saveConfig({ message = true } = {}) {
   currentConfig = { ...(currentConfig || {}), ...getFormConfig() };
+  if(currentConfig.telegramEnabled) {
+    if(!currentConfig.telegramBotToken || !currentConfig.telegramChatId) { toast("Informe token e Chat ID antes de ativar Telegram.","error"); return false; }
+    if(!(await requestTelegramPermission())) return false;
+  }
+  if(currentConfig.automationEnabled || currentConfig.automationWebhookUrl) {
+    try {
+      if(new URL(currentConfig.automationWebhookUrl).protocol !== 'https:') throw new Error('Use um endpoint HTTPS.');
+      if(currentConfig.automationEnabled && !(await requestOrigin(currentConfig.automationWebhookUrl))) return false;
+    } catch(error) { toast(error.message,'error'); return false; }
+  }
   const response = await send("SAVE_CONFIG", { config: currentConfig });
   if (!response.ok) { toast(response.error || "Falha ao salvar.", "error"); return false; }
   currentConfig = response.config;
@@ -202,7 +212,7 @@ async function testAutomation() {
 
 function renderConfig(config) {
   currentConfig = config || {};
-  ui.monitorName.value = config?.name ?? "Monitor";
+  ui.monitorName.value = config?.name ?? "Meu monitor";
   ui.intervalMinutes.value = config?.intervalMinutes ?? 5;
   ui.counterSelector.value = config?.counterSelector ?? "";
   ui.itemSelector.value = config?.itemSelector ?? "";
@@ -561,3 +571,5 @@ chrome.storage.onChanged.addListener((_changes, area) => {
   if (area === 'local') refresh().catch(() => toast('Falha ao atualizar status.', 'error'));
 });
 refresh();
+
+$("#extensionVersion").textContent = "v" + chrome.runtime.getManifest().version;

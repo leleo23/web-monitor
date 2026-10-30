@@ -9,7 +9,7 @@ const HEALTH_FAILURE_THRESHOLD = 2;
 const MAX_HISTORY = 80;
 const CAPTURE_ATTEMPTS = 12;
 const CAPTURE_DELAY_MS = 900;
-const REMOTE_TIMEOUT_MS = 10000;
+const REMOTE_TIMEOUT_MS = 12000;
 let stateQueue = Promise.resolve();
 let offscreenCreation = null;
 
@@ -30,7 +30,8 @@ function safeError(error) {
 }
 
 async function initializeStorage() {
-  await chrome.storage.local.setAccessLevel({ accessLevel: "TRUSTED_CONTEXTS" });
+  try { await chrome.storage.local.setAccessLevel?.({ accessLevel: "TRUSTED_CONTEXTS" }); }
+  catch { /* Optional hardening must not block alarms or migration. */ }
   await monitorStorage.migrate();
   for (const { id } of await monitorStorage.catalog()) {
     await monitorStorage.set({ monitorReading: false }, id);
@@ -55,10 +56,18 @@ async function updateMonitorConfig(patch, monitorId = patch.id) {
     }
   }
   const interval = Number(next.intervalMinutes ?? 5);
-  if (!Number.isFinite(interval) || interval < 1 || interval > 1440) throw new Error("O intervalo deve ficar entre 1 e 1440 minutos.");
-  next.intervalMinutes = interval;
+  if (!Number.isFinite(interval)) throw new Error("O intervalo deve ficar entre 1 e 1440 minutos.");
+  next.intervalMinutes = Math.min(1440, Math.max(1, interval));
   if (next.boundUrl && !isHttpUrl(next.boundUrl)) throw new Error("A fila precisa usar HTTP ou HTTPS.");
   if (next.automationWebhookUrl && new URL(next.automationWebhookUrl).protocol !== "https:") throw new Error("O webhook precisa usar HTTPS.");
+  if (next.telegramEnabled) {
+    if (!String(next.telegramBotToken || '').trim() || !String(next.telegramChatId || '').trim()) throw new Error("Informe token e Chat ID antes de ativar Telegram.");
+    await ensureRemotePermission("https://api.telegram.org/*");
+  }
+  if (next.automationEnabled) {
+    if (!next.automationWebhookUrl) throw new Error("Informe o endpoint HTTPS antes de ativar a automação.");
+    await ensureRemotePermission(`${new URL(next.automationWebhookUrl).origin}/*`);
+  }
   const changed = patch.resetBaseline === true || readingKey(next) !== readingKey(monitorConfig);
   next.revision = (monitorConfig.revision || 0) + 1;
   const values = { monitorConfig: next, pickerSession: null };
@@ -112,7 +121,7 @@ async function handleMessage(message) {
     case "CREATE_MONITOR": {
       const type = message.monitorType || "visual";
       if (!["visual", "queue"].includes(type)) throw new Error("Tipo de monitor inválido.");
-      const config = { id: crypto.randomUUID(), type, name: type === "visual" ? "Novo monitor visual" : "Nova fila",
+      const config = { id: crypto.randomUUID(), type, name: "Meu monitor",
         createdAt: Date.now(), enabled: false, intervalMinutes: 5, revision: 1, soundId: "pulse", volume: 0.7 };
       await withStateUpdate(() => monitorStorage.create(config));
       return { ok: true, config };
@@ -137,7 +146,7 @@ async function handleMessage(message) {
     case "PREVIEW_SOUND": {
       if (!Object.hasOwn(WebMonitorSounds, message.soundId)) throw new Error("Som inválido.");
       if (message.volume !== undefined && (!Number.isFinite(message.volume) || message.volume < 0 || message.volume > 1)) throw new Error("Volume inválido.");
-      await playSound({ soundId: message.soundId, volume: message.volume ?? 0.7 });
+      await playSound({ soundId: message.soundId, volume: message.volume ?? 0.7 }, "manual_test");
       return { ok: true };
     }
     case "GET_STATUS":
@@ -344,10 +353,6 @@ async function resolveDedicatedTab(config) {
     try { return await chrome.tabs.get(config.tabId); } catch {}
   }
 
-  const tabs = await chrome.tabs.query({});
-  const exact = tabs.find((tab) => tab.url === config?.boundUrl);
-  if (exact) return exact;
-
   return null;
 }
 
@@ -360,6 +365,12 @@ async function ensureDedicatedTabReady(config, { refresh = false } = {}) {
 
   if (!tab && config?.boundUrl) {
     tab = await chrome.tabs.create({ url: config.boundUrl, active: false });
+    await withStateUpdate(async () => {
+      const { monitorConfig: latest } = await monitorStorage.get("monitorConfig", config.id);
+      if (!latest || latest.revision !== config.revision) throw new Error("Configuração alterada durante recuperação da aba.");
+      await monitorStorage.set({ monitorConfig: { ...latest, tabId: tab.id } }, config.id);
+      config.tabId = tab.id;
+    });
   }
   if (!tab) return null;
 
@@ -403,7 +414,7 @@ async function ensureDedicatedTabReady(config, { refresh = false } = {}) {
 
 async function focusDedicatedTab(monitorId) {
   const { monitorConfig } = await monitorStorage.get("monitorConfig", monitorId);
-  const tab = await resolveDedicatedTab(monitorConfig || {});
+  const tab = monitorConfig?.boundUrl ? await ensureDedicatedTabReady(monitorConfig) : null;
   if (!tab) return;
   await chrome.windows.update(tab.windowId, { focused: true });
   await chrome.tabs.update(tab.id, { active: true });
@@ -526,44 +537,27 @@ async function captureAllFrames(tabId, config) {
 
 function captureFrameState(config) {
   let selectorFailed = false;
-  function deepAll(selector, initialRoot = document) {
-    if (!selector) return [];
-    const results = [];
-    const seen = new Set();
-    const roots = [initialRoot];
-
-    while (roots.length) {
-      const root = roots.pop();
-      if (!root?.querySelectorAll) continue;
-      let matches = [], elements = [];
-      try {
-        matches = [...root.querySelectorAll(selector)];
-        elements = [...root.querySelectorAll("*")];
-      } catch {
-        selectorFailed = true;
-        continue;
-      }
-      for (const match of matches) {
-        if (!seen.has(match)) { seen.add(match); results.push(match); }
-      }
-      for (const element of elements) {
-        if (element.shadowRoot) roots.push(element.shadowRoot);
-      }
+  let openRootsCache = null;
+  function getOpenRoots() {
+    if (openRootsCache) return openRootsCache;
+    const roots = [document];
+    for (let i=0; i<roots.length; i++) {
+      for (const element of roots[i].querySelectorAll("*")) if (element.shadowRoot) roots.push(element.shadowRoot);
     }
-    return results;
+    return (openRootsCache = roots);
   }
-
-  function deepOne(selector, initialRoot = document) {
+  function deepAll(selector) {
+    if (!selector) return [];
+    try { return [...new Set(getOpenRoots().flatMap(root => [...root.querySelectorAll(selector)]))]; }
+    catch { selectorFailed = true; return []; }
+  }
+  function deepOne(selector) {
     if (!selector) return null;
-    const roots = [initialRoot];
-    while (roots.length) {
-      const root = roots.pop();
-      try {
-        const match = root.querySelector(selector);
-        if (match) return match;
-        for (const element of root.querySelectorAll("*")) if (element.shadowRoot) roots.push(element.shadowRoot);
-      } catch { selectorFailed = true; }
-    }
+    try {
+      const direct = document.querySelector(selector);
+      if (direct) return direct;
+      for (const root of getOpenRoots()) { const match=root.querySelector(selector); if(match) return match; }
+    } catch { selectorFailed = true; }
     return null;
   }
 
@@ -680,7 +674,7 @@ async function dispatchChannels(config, details) {
   const delivery = {};
   const providers = [
     ["local", config.notificationsEnabled !== false, () => showNotification(details)],
-    ["sound", details.sound && config.soundEnabled !== false, () => playSound(config)],
+    ["sound", details.sound && details.kind === "change" && config.soundEnabled !== false, () => playSound(config, details.kind === "change" ? "queue_change" : "invalid")],
     ["telegram", config.telegramEnabled === true, () => sendTelegramMessage(config, sanitizedText(details.kind, details.timestamp))],
     ["automation", config.automationEnabled === true, () => sendAutomationWebhook(config, details.event, details.timestamp)]
   ];
@@ -769,7 +763,7 @@ async function testLocalAlert(monitorId) {
     await setChannelSuccess("local", monitorId);
   } catch (error) { await setChannelError("local", safeError(error), monitorId); throw error; }
   if (monitorConfig?.soundEnabled !== false) {
-    try { await playSound(monitorConfig || {}); await setChannelSuccess("sound", monitorId); }
+    try { await playSound(monitorConfig || {}, "manual_test"); await setChannelSuccess("sound", monitorId); }
     catch (error) { await setChannelError("sound", safeError(error), monitorId); throw new Error("Notificação Desktop enviada, mas o áudio falhou."); }
   }
   return { ok: true };
@@ -785,9 +779,10 @@ async function ensureOffscreenDocument() {
   try { await offscreenCreation; } finally { offscreenCreation = null; }
 }
 
-async function playSound(config = {}) {
+async function playSound(config = {}, reason) {
+  if (!["queue_change", "manual_test"].includes(reason)) throw new Error("Motivo de áudio não permitido.");
   await ensureOffscreenDocument();
-  const response = await chrome.runtime.sendMessage({ type: "PLAY_SOUND", soundId: config.soundId || "pulse", volume: config.volume ?? 0.7 });
+  const response = await chrome.runtime.sendMessage({ type: "PLAY_SOUND", reason, soundId: config.soundId || "pulse", volume: config.volume ?? 0.7 });
   if (!response?.ok) throw new Error("Não foi possível reproduzir o alerta sonoro.");
 }
 
@@ -830,7 +825,7 @@ async function dispatchHealthChannels(config, kind, failures = 0, lastSuccessAt 
     message: kind === "recovery" ? "A leitura voltou a funcionar normalmente."
       : `Falha em ${failures} verificações consecutivas. Última leitura válida: ${lastSuccessAt ? formatDateTime(lastSuccessAt) : "não disponível"}.`,
     kind, event: kind === "recovery" ? "monitor_recovered" : "monitor_error",
-    timestamp: Date.now(), sound: kind === "health_error"
+    timestamp: Date.now(), sound: false
   });
 }
 

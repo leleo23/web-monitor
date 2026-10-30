@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased — reconciliação RC1
+
+- Permissões mínimas, CSP e hardening resiliente.
+- Aba exclusivamente dedicada com persistência imediata e cache lazy de Shadow Roots.
+- Som limitado a mudança confirmada/teste manual em duas camadas.
+- Validação de canais, intervalo limitado, webhook genérico e versão dinâmica.
+- Ver docs/RC1-SYNC.md para diferenças preservadas do HEAD.
+
 ## 0.6.0
 
 ### Added

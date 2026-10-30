@@ -13,7 +13,7 @@
         <img src="icon48.png" alt="">
         <div><h1>Web Monitor</h1><p>Monitoramento local de filas web</p></div>
       </div>
-      <span class="version">v0.6.0</span>
+      <span id="extensionVersion" class="version"></span>
     </header>
 
     <nav class="tabs">
@@ -25,6 +25,7 @@
     </nav>
 
     <section id="tab-dashboard" class="tab-panel active">
+      <p class="privacy">Processamento local. O Chrome precisa permanecer aberto. Nenhum conteúdo da página é enviado pelas integrações; se ativadas, elas recebem somente eventos sanitizados.</p>
       <section class="card home-summary">
         <div class="section-title"><div><span class="eyebrow">SEU AMBIENTE</span><h2 id="globalStatus">Nenhum monitor</h2></div><button id="newMonitorBtn" class="primary">+ Criar monitor</button></div>
         <div class="home-metrics">
@@ -128,7 +129,7 @@
           </div>
 
           <details class="advanced">
-            <summary>Configuração técnica</summary>
+            <summary>Configuração avançada</summary>
             <label for="counterSelector">Seletor do contador</label>
             <input id="counterSelector" type="text" placeholder="Selecionado automaticamente">
             <label for="itemSelector">Seletor dos itens</label>
@@ -142,7 +143,7 @@
         <div class="step-content">
           <h2>Comportamento</h2>
           <label for="monitorName">Nome local do monitor</label>
-          <input id="monitorName" type="text" value="Monitor">
+          <input id="monitorName" type="text" value="Meu monitor">
           <div class="inline-fields">
             <div><label for="intervalMinutes">Verificar a cada</label><div class="suffix"><input id="intervalMinutes" type="number" min="1" max="1440" value="5"><span>min</span></div></div>
           </div>
@@ -182,10 +183,10 @@
       </section>
 
       <section class="card integration-card">
-        <div class="integration-head"><div class="integration-icon">⚡</div><div><h2>E-mail / Teams via Power Automate</h2><p>Dispara um webhook sanitizado para um fluxo externo.</p></div></div>
+        <div class="integration-head"><div class="integration-icon">⚡</div><div><h2>Webhook / automações</h2><p>Dispara um evento sanitizado para um endpoint HTTPS configurado por você.</p></div></div>
         <div class="privacy">O payload contém apenas o tipo do evento e horário. O fluxo pode usar “Send an email (V2)” ou publicar no Teams.</div>
         <label class="toggle"><input id="automationEnabled" type="checkbox"><span><strong>Ativar automação externa</strong></span></label>
-        <label for="automationWebhookUrl">URL do webhook do Power Automate</label>
+        <label for="automationWebhookUrl">Endpoint HTTPS</label>
         <textarea id="automationWebhookUrl" rows="3" placeholder="https://..."></textarea>
         <div class="actions"><button id="saveAutomationBtn" class="secondary">Salvar</button><button id="testAutomationBtn" class="ghost">Testar webhook</button></div>
       </section>

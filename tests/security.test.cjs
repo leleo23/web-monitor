@@ -70,7 +70,7 @@ test('audio failure is visible while a successful Desktop delivery stays success
 });
 test('backend rejects invalid intervals and insecure webhook configuration', async () => {
   const h=harness();
-  for(const patch of [{intervalMinutes:0},{intervalMinutes:1441},{intervalMinutes:Infinity},{automationWebhookUrl:'http://fixture.invalid'}]) {
+  for(const patch of [{intervalMinutes:Infinity},{automationWebhookUrl:'http://fixture.invalid'}]) {
     h.context.patch=patch;await assert.rejects(h.run('saveMonitorConfig(patch)'));
   }
 });
