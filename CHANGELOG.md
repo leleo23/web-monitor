@@ -1,6 +1,16 @@
 # Changelog
 
-## Unreleased — reconciliação RC1
+## 0.7.0
+
+### Funcionalidades (commit separado)
+
+- Fluxo guiado com uso da página atual, detecção por sinais SysAid/ServiceNow e fallback genérico/manual.
+- Sugestões com exemplos/pontuação e confirmação revalidada antes de salvar.
+- Diagnóstico sem modificar baseline e testes explícitos de canais.
+- Guia Telegram, consumidores futuros identificados como Em breve e webhook avançado.
+- Importação/exportação limitada a preferências sem segredos ou fonte.
+
+### Reconciliação RC1
 
 - Permissões mínimas, CSP e hardening resiliente.
 - Aba exclusivamente dedicada com persistência imediata e cache lazy de Shadow Roots.

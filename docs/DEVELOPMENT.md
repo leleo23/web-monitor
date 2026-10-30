@@ -50,3 +50,7 @@ Visual: `type: visual`, `visualLocator` com frame/shadowChain/primary/fallbacks,
 `src/core/sounds.js` é a lista fechada dos quatro arquivos locais, compartilhada pelo worker e documento offscreen. Som e volume são por monitor. Prévia é um comando explícito separado; mute impede alertas automáticos, sem bloquear a prévia solicitada pelo usuário.
 
 A validação de reinício usa uma nova instância do worker com o storage persistido. É evidência de migração e persistência de dados; o ciclo de vida real do Chrome/MV3 continua exigindo checklist manual. Timers de fetch são limpos em finally; o picker remove listeners/overlays na seleção, ESC e substituição. Não foram adicionados MutationObservers ou timers de polling rápido.
+
+## v0.7.0
+
+Detector autocontido em src/core/detector.js, injetado best-effort por frame. Confirmação reexecuta a captura validada, com revisão para rejeitar sugestões antigas. src/core/portable.js tem allowlist estrita de preferências sem texto livre. TEST_MONITOR não chama runCheck; TEST_ALL_ALERTS é explícito e não muda baseline. Chrome mínimo 116 permanece por getContexts. Audio exige reason queue_change/manual_test no worker e offscreen; saúde/recuperação nunca tocam.

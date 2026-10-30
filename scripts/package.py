@@ -9,9 +9,9 @@ files = [
     "manifest.json", "background.js", "popup.html", "popup.js", "popup.css",
     "offscreen.html", "offscreen.js", "alert.wav", "icon16.png", "icon32.png",
     "icon48.png", "icon128.png", "src/core/detection.js", "src/core/storage.js",
-    "src/core/insights.js", "src/core/sounds.js", "sounds/bell.wav", "sounds/digital.wav",
+    "src/core/insights.js", "src/core/sounds.js", "src/core/detector.js", "src/core/portable.js", "sounds/bell.wav", "sounds/digital.wav",
     "sounds/critical.wav", "README.md",
-    "CHANGELOG.md", "docs/PRIVACY.md", "docs/DEVELOPMENT.md",
+    "CHANGELOG.md", "docs/PRIVACY.md", "docs/DEVELOPMENT.md", "docs/RC1-SYNC.md", "docs/DELIVERY-0.7.md",
 ]
 out = root / "dist"
 out.mkdir(exist_ok=True)

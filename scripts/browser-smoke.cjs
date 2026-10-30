@@ -53,6 +53,17 @@ const { harness, root } = require('../tests/helpers.cjs');
       itemLocator:{shadowChain:['outer-host','inner-host'],targetSelector:'.id'}});
     assert.equal(result.total,1); assert.deepEqual(result.items,['INC0012345']);
     passed('nested open Shadow DOM locators');
+    await page.evaluate(()=>{
+      window.starScans=0;window.nativeDocumentQuery=Document.prototype.querySelectorAll;window.nativeShadowQuery=ShadowRoot.prototype.querySelectorAll;
+      Document.prototype.querySelectorAll=function(selector){if(selector==='*')window.starScans++;return window.nativeDocumentQuery.call(this,selector)};
+      ShadowRoot.prototype.querySelectorAll=function(selector){if(selector==='*')window.starScans++;return window.nativeShadowQuery.call(this,selector)};
+    });
+    await capture({counterLocator:{shadowChain:['outer-host','inner-host'],targetSelector:'now-badge'},itemLocator:{shadowChain:['outer-host','inner-host'],targetSelector:'.id'}});
+    assert.equal(await page.evaluate(()=>window.starScans),0);
+    await capture({counterSelector:'now-badge',itemSelector:'.id'});
+    assert.equal(await page.evaluate(()=>window.starScans),3);
+    await page.evaluate(()=>{Document.prototype.querySelectorAll=window.nativeDocumentQuery;ShadowRoot.prototype.querySelectorAll=window.nativeShadowQuery});
+    passed('valid locators skip deep scans and fallback shares a lazy root index');
 
     result = await capture({counterSelector:'now-badge',itemSelector:'.id'});
     assert.equal(result.total,1); assert.deepEqual(result.items,['INC0012345']);
@@ -61,6 +72,16 @@ const { harness, root } = require('../tests/helpers.cjs');
     result = await capture({counterSelector:'[',itemSelector:'.id'});
     assert.equal(result.counterFound,false); assert.ok(result.invalidItems>0);
     passed('invalid CSS selector rejects the capture');
+    await page.setContent('<span id="count">Mostrando 1-2 de 2</span><table><tr><td data-cy="id">370415</td><td data-cy="id">370416</td></tr></table>');
+    let detected=await page.evaluate(h.context.detectQueueFrame);
+    assert.equal(detected[0].preset,'SysAid');assert.equal(detected[0].total,2);assert.ok(detected[0].confidence>=90);
+    passed('SysAid preset suggests a semantic counter and collection');
+    await page.setContent('<span id="count">Showing 1-2 of 2</span><table><tr><td>INC001</td><td>INC002</td></tr></table>');
+    detected=await page.evaluate(h.context.detectQueueFrame);assert.equal(detected[0].preset,'ServiceNow');
+    passed('ServiceNow signals select a preset without hardcoded domains');
+    await page.evaluate(()=>{document.body.innerHTML='<x-list></x-list>';document.querySelector('x-list').attachShadow({mode:'open'}).innerHTML='<span id="count">Mostrando 1-2 de 2</span><table><tr><td data-cy="id">370415</td><td data-cy="id">370416</td></tr></table>'});
+    detected=await page.evaluate(h.context.detectQueueFrame);assert.deepEqual(detected[0].counterLocator.shadowChain,['x-list']);
+    passed('detector preserves Shadow DOM source paths');
 
     await page.setContent('<div id="target" data-testid="queue-indicator">Critical incidents: 3</div>');
     await page.evaluate(() => { window.chrome={runtime:{getManifest:()=>({version:"0.6.0"}),sendMessage:async message=>{window.sentSelection=message;return {ok:true}}}}; });

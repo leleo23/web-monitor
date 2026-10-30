@@ -1,4 +1,4 @@
-importScripts("src/core/detection.js", "src/core/storage.js", "src/core/insights.js", "src/core/sounds.js");
+importScripts("src/core/detection.js", "src/core/storage.js", "src/core/insights.js", "src/core/sounds.js", "src/core/detector.js", "src/core/portable.js");
 const monitorStorage = createMonitorStorage(chrome.storage.local);
 const { dailyInsights, monitorStatus } = WebMonitorInsights;
 const { compareSnapshots, shouldAlert, buildHistoryEvent, readingKey, snapshotKey, validateSnapshot } = WebMonitorCore;
@@ -148,6 +148,64 @@ async function handleMessage(message) {
       if (message.volume !== undefined && (!Number.isFinite(message.volume) || message.volume < 0 || message.volume > 1)) throw new Error("Volume inválido.");
       await playSound({ soundId: message.soundId, volume: message.volume ?? 0.7 }, "manual_test");
       return { ok: true };
+    }
+    case "DETECT_QUEUE": {
+      const { monitorConfig: config } = await monitorStorage.get("monitorConfig", monitorId);
+      if(!config?.boundUrl)throw new Error("Use a página atual primeiro.");
+      const tab = await ensureDedicatedTabReady(config);
+      const frames = await executeInFramesBestEffort(tab.id, detectQueueFrame);
+      const candidates=frames.filter(r=>r.ok && Array.isArray(r.result)).flatMap(r=>r.result)
+        .sort((a,b)=>b.confidence-a.confidence).slice(0,5).map(value=>({...value,id:crypto.randomUUID()}));
+      await withStateUpdate(async()=>{
+        if(!(await checkStillCurrent(config,"manual")))throw new Error("A configuração mudou. Detecte novamente.");
+        await monitorStorage.set({monitorDetectionDraft:{revision:config.revision,candidates}},monitorId);
+      });
+      return {ok:true,candidates};
+    }
+    case "APPLY_DETECTION": {
+      const {monitorConfig:config,monitorDetectionDraft:draft}=await monitorStorage.get(["monitorConfig","monitorDetectionDraft"],monitorId);
+      const selected=draft?.candidates.find(value=>value.id===message.candidateId);
+      if(!selected || draft.revision!==config?.revision)throw new Error("Sugestão expirada. Detecte novamente.");
+      const proposal={...config,type:"queue",counterSelector:selected.counterSelector,itemSelector:selected.itemSelector,counterLocator:selected.counterLocator,itemLocator:selected.itemLocator};
+      const tab=await ensureDedicatedTabReady(config);await captureWithRetry(tab.id,proposal);
+      const saved=await withStateUpdate(async()=>{
+        if(!(await checkStillCurrent(config,"manual")))throw new Error("A configuração mudou.");
+        return updateMonitorConfig({...proposal,enabled:false},monitorId);
+      });
+      return {ok:true,config:saved};
+    }
+    case "TEST_MONITOR": {
+      const {monitorConfig:config}=await monitorStorage.get("monitorConfig",monitorId);
+      if(!config?.boundUrl)throw new Error("Configure a fonte do monitor primeiro.");
+      const tab=await ensureDedicatedTabReady(config);
+      const snapshot=await captureWithRetry(tab.id,config);
+      return {ok:true,checks:[{name:"Página acessível",status:"ok"},{name:"Contador",status:"ok",value:snapshot.total},
+        {name:config.type==="visual"?"Elemento":"Itens",status:"ok",value:config.type==="visual"?"Localizado":snapshot.items.length},
+        ...[['Desktop',config.notificationsEnabled!==false],['Som',config.soundEnabled!==false],['Telegram',config.telegramEnabled],['Webhook',config.automationEnabled]]
+          .map(([name,enabled])=>({name,status:enabled?'ok':'disabled',value:enabled?'Configurado; envio não testado':'Desativado'}))],snapshot};
+    }
+    case "TEST_ALL_ALERTS": {
+      const {monitorConfig:config}=await monitorStorage.get("monitorConfig",monitorId);
+      if(!config)throw new Error("Escolha um monitor.");
+      const checks=[];
+      const channels=[['Desktop',config.notificationsEnabled!==false,()=>showNotification({title:"Web Monitor — teste",message:"Teste manual de alerta."})],
+        ['Som',config.soundEnabled!==false,()=>playSound(config,"manual_test")],
+        ['Telegram',config.telegramEnabled,()=>testTelegram(monitorId)],['Webhook',config.automationEnabled,()=>testAutomationWebhook(monitorId)]];
+      for(const [name,enabled,send] of channels){
+        if(!enabled){checks.push({name,status:"disabled"});continue;}
+        try{await send();checks.push({name,status:"ok"});}catch(error){checks.push({name,status:"error",error:safeError(error)});}
+      }
+      return {ok:true,checks};
+    }
+    case "EXPORT_CONFIG": {
+      const {monitorConfig:config}=await monitorStorage.get("monitorConfig",monitorId);
+      return {ok:true,data:WebMonitorPortable.exportPreferences(config || {})};
+    }
+    case "IMPORT_CONFIG": {
+      const preferences=WebMonitorPortable.importPreferences(message.data);
+      const created=await handleMessage({type:"CREATE_MONITOR",monitorType:preferences.type || "queue"});
+      const config=await saveMonitorConfig({...preferences,enabled:false},created.config.id);
+      return {ok:true,config};
     }
     case "GET_STATUS":
       return { ok: true, ...(await getStatus(monitorId)) };

@@ -1,4 +1,4 @@
-# Web Monitor v0.6.0
+# Web Monitor v0.7.0
 
 Extensão Chrome Manifest V3 para filas web, com contador, IDs e alertas Desktop, som, Telegram e webhook. Requer Chrome **116+**, navegador aberto e sessão válida na fila.
 
@@ -8,7 +8,7 @@ Extensão Chrome Manifest V3 para filas web, com contador, IDs e alertas Desktop
 2. Abra `chrome://extensions` e ative **Modo do desenvolvedor**.
 3. Clique em **Carregar sem compactação** e selecione a pasta que contém `manifest.json`.
 
-Para atualizar, copie os arquivos novos, incluindo as pastas `src` e `sounds`, para a **mesma pasta da instalação anterior** e clique em **Recarregar** no cartão da extensão. Manter a mesma pasta/ID evita criar uma instalação com configurações separadas. A migração da v0.6.0 mantém a fila existente, histórico e preferências. A primeira leitura cria um baseline seguro quando a configuração da fonte mudou.
+Para atualizar, copie os arquivos novos, incluindo as pastas `src` e `sounds`, para a **mesma pasta da instalação anterior** e clique em **Recarregar** no cartão da extensão. Manter a mesma pasta/ID evita criar uma instalação com configurações separadas. A migração da v0.7.0 mantém a fila existente, histórico e preferências. A primeira leitura cria um baseline seguro quando a configuração da fonte mudou.
 
 Não precisa de Node, npm ou servidor para usar a extensão. As dependências são apenas ferramentas de desenvolvimento.
 
@@ -94,3 +94,18 @@ Com Chromium instalado em Linux: `CHROMIUM_PATH=/usr/bin/chromium npm run test:b
 ZIP com Python 3: `python3 scripts/package.py`. O manifesto fica diretamente na raiz do ZIP: extraia e selecione a pasta onde você vê `manifest.json`, `background.js`, `src` e `sounds`. O pacote exclui dependências, testes e arquivos locais usando lista explícita de assets.
 
 Veja [arquitetura e validação](docs/DEVELOPMENT.md) e [changelog](CHANGELOG.md). Licença e documentação final de publicação permanecem pendentes; a extensão não está publicada na Chrome Web Store.
+
+
+## Configuração guiada (0.7.0)
+
+Na Home, use **Criar monitor → Configurar monitor automaticamente** com a fila aberta. A extensão cria sua própria aba, detecta sinais de SysAid/ServiceNow ou usa heurísticas genéricas, mostra contador, itens, exemplos e pontuação. Confirme uma sugestão para revalidá-la; depois escolha alertas, use **Testar monitor** / **Testar alertas** e inicie. A pontuação é heurística, não uma probabilidade ou garantia de compatibilidade. Nenhum monitor inicia automaticamente ao confirmar.
+
+Se não houver sugestão segura, use **Selecionar manualmente**. Seletores ficam em **Configuração avançada**. O detector limita o trabalho por frame a 5.000 elementos e 50 roots; páginas grandes ou estruturas diferentes podem exigir o picker. Os presets são sinais de DOM/identificadores, sem URLs ou empresas codificadas.
+
+**Testar monitor** não grava baseline, saúde, histórico nem amostras. Pode recriar e persistir a aba dedicada se ela foi fechada. Estado de canal configurado não prova entrega; **Testar alertas** envia os testes explícitos dos canais ativados. Som só toca para mudança confirmada ou teste solicitado, nunca por saúde/recuperação.
+
+**Conectar Telegram** orienta token → conversa → teste → conectado. Chat ID fica em opções avançadas. Email, Teams e Slack continuam **Em breve**; webhook HTTPS é uma opção avançada, sem backend próprio.
+
+**Exportar configuração** transfere somente preferências validadas (tipo, intervalo, flags e áudio). Por privacidade, não inclui nem nome livre, URLs ou seletores, que também podem conter segredos. Importar cria um monitor pausado e exige confirmar a página/elementos novamente. Credenciais existentes de outros monitores não são alteradas.
+
+Veja docs/RC1-SYNC.md e docs/DELIVERY-0.7.md para reconciliação, arquivos e limites de validação. Chrome mínimo 116 mantido; a permissão permanente tabs foi substituída por activeTab com concessões opcionais por origem.

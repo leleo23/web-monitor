@@ -1,4 +1,4 @@
-# Tratamento de dados — versão 0.6.0
+# Tratamento de dados — versão 0.7.0
 
 Descreve o código atual; a política para publicação na loja ainda precisa de revisão.
 
@@ -22,3 +22,5 @@ Não há telemetria ou servidor próprio implementado. Serviços externos têm r
 Pause para interromper novas verificações; desative canais para futuros envios. Apague token, Chat ID e webhook e salve para remover credenciais. **Limpar** remove eventos do histórico do monitor selecionado; amostras para o gráfico continuam retidas. **Excluir este monitor** remove sua configuração, histórico e amostras, após confirmação. Desinstalar remove o storage do perfil ativo conforme o Chrome; backups e mensagens entregues a terceiros não são apagados por isso.
 
 Permissões podem ser revogadas nas configurações da extensão. Requisições iniciadas e notificações entregues não podem ser desfeitas pela pausa.
+
+Exportação portátil inclui apenas preferências validadas, sem nome livre, URL, seletores, credenciais, histórico ou conteúdo. A detecção e seus exemplos permanecem no perfil local. Testar alertas é uma ação explícita que envia eventos de teste aos canais ativados.

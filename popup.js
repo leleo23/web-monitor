@@ -181,7 +181,9 @@ async function testTelegram() {
   if (!(await saveConfig({ message: false }))) return;
   const response = await send("TEST_TELEGRAM");
   if (!response.ok) return toast(response.error || "Falha no teste do Telegram.", "error");
-  toast("Mensagem de teste enviada ao Telegram.", "success");
+  ui.telegramEnabled.checked = true;
+  await saveConfig({message:false});
+  toast("Telegram conectado. Mensagem de teste enviada.", "success");
   await refresh();
 }
 
@@ -500,7 +502,7 @@ async function revalidateSelection() {
   finally { validatingSelection=false; }
 }
 
-async function createMonitor(type) {
+async function createMonitor(type, automatic = false) {
   const [tab] = await chrome.tabs.query({active:true,currentWindow:true});
   if (!tab?.url || !/^https?:/i.test(tab.url)) throw new Error('Abra a página que deseja monitorar antes de criar um monitor.');
   if (!(await requestOrigin(tab.url))) throw new Error('Permissão para a página não concedida.');
@@ -510,7 +512,8 @@ async function createMonitor(type) {
   formDirty=false; currentConfig=response.config; renderConfig(response.config);
   $('#createChooser').classList.add('hidden'); activateTab('setup');
   await createDedicatedTab();
-  if (type==='visual') await beginPicker('visual');
+  if (automatic) await detectQueue();
+  else if (type==='visual') await beginPicker('visual');
 }
 
 function bindAction(id, action) {
@@ -523,7 +526,46 @@ function bindAction(id, action) {
   });
 }
 
-bindAction('#newMonitorBtn',()=>{$('#createChooser').classList.toggle('hidden');});
+async function detectQueue(){
+  if(!(await saveConfig({message:false})))return;
+  toast('Detectando elementos…');
+  const response=await send('DETECT_QUEUE');if(!response.ok)throw new Error(response.error);
+  const container=$('#detectionResults');container.replaceChildren();
+  if(!response.candidates.length){container.append(node('p','Não foi possível sugerir uma fila com segurança. Use a seleção manual.'));return;}
+  for(const candidate of response.candidates){
+    const card=node('div',undefined,'card');card.append(node('strong',`${candidate.preset} · confiança ${candidate.confidence}%`),
+      node('p',`Total: ${candidate.total} · Itens: ${candidate.items}`),node('p','Exemplos: '+candidate.examples.join(', ')));
+    const use=node('button','Usar configuração','primary');cardAction(use,async()=>{
+      const saved=await send('APPLY_DETECTION',{candidateId:candidate.id});if(!saved.ok)throw new Error(saved.error);
+      currentConfig=saved.config;formDirty=false;container.replaceChildren();activateTab('integrations');toast('Configuração confirmada. Escolha alertas e teste antes de iniciar.','success');
+    });card.append(use);container.append(card);
+  }
+}
+function showDiagnostic(response){
+  if(!response.ok){$('#diagnosticResults').textContent='✗ '+response.error;throw new Error(response.error);}
+  $('#diagnosticResults').textContent=response.checks.map(check=>`${check.status==='ok'?'✓':check.status==='disabled'?'○':'✗'} ${check.name}: ${check.error || (check.value ?? (check.status==='disabled'?'Desativado':'OK'))}`).join('\n');
+}
+bindAction('#autoSetupBtn',()=>createMonitor('queue',true));
+bindAction('#detectQueueBtn',detectQueue);
+bindAction('#manualSetupBtn',()=>{ $('#queueSetup').classList.remove('hidden'); $('#queueSetup').scrollIntoView({block:'nearest'}); });
+bindAction('#finishSetupBtn',async()=>{await startMonitoring();activateTab('details');});
+bindAction('#testChannelsBtn',async()=>{showDiagnostic(await send('TEST_ALL_ALERTS'));activateTab('setup');});
+bindAction('#diagnoseBtn',async()=>showDiagnostic(await send('TEST_MONITOR')));
+bindAction('#testAllAlertsBtn',async()=>showDiagnostic(await send('TEST_ALL_ALERTS')));
+bindAction('#findTelegramBtn',discoverTelegram);
+bindAction('#exportConfigBtn',async()=>{
+  const response=await send('EXPORT_CONFIG');if(!response.ok)throw new Error(response.error);
+  const url=URL.createObjectURL(new Blob([JSON.stringify(response.data,null,2)],{type:'application/json'}));
+  const link=node('a');link.href=url;link.download='web-monitor-preferencias.json';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+});
+$('#importConfigFile').addEventListener('change',async event=>{
+  try{
+    const file=event.target.files[0];if(!file)return;if(file.size>4096)throw new Error('Arquivo muito grande.');
+    const response=await send('IMPORT_CONFIG',{data:JSON.parse(await file.text())});if(!response.ok)throw new Error(response.error);
+    currentConfig=response.config;formDirty=false;activateTab('setup');await refresh();toast('Preferências importadas. Use a página atual e confirme os elementos.');
+  }catch(error){toast(error.message,'error');}finally{event.target.value='';}
+});
+bindAction('#newMonitorBtn' ,()=>{$('#createChooser').classList.toggle('hidden');});
 bindAction('#createVisualBtn',()=>createMonitor('visual'));
 bindAction('#createQueueBtn',()=>createMonitor('queue'));
 bindAction('#pickVisualBtn',()=>beginPicker('visual'));

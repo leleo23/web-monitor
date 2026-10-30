@@ -38,6 +38,7 @@
       <section id="createChooser" class="card hidden">
         <h2>O que você quer acompanhar?</h2><p>Escolha uma página aberta no navegador.</p>
         <button id="createVisualBtn" class="choice"><strong>Selecionar elemento na página</strong><span>Observe mudanças em um texto, número ou indicador.</span></button>
+        <button id="autoSetupBtn" class="choice"><strong>Configurar monitor automaticamente</strong><span>Usar página atual → detectar → confirmar → alertas → testar → iniciar.</span></button>
         <button id="createQueueBtn" class="choice"><strong>Fila de chamados</strong><span>Selecione contador e IDs. Ideal para SysAid.</span></button>
       </section>
       <div class="section-title"><h2>Monitores</h2><span id="monitorCount" class="subtle"></span></div>
@@ -99,10 +100,22 @@
           <h2>Fonte monitorada</h2>
           <p>A extensão usa uma aba dedicada para atualizar a fila sem atrapalhar seu trabalho.</p>
           <div id="boundTabBox" class="source-box"><strong id="boundTabText">Nenhuma aba dedicada</strong><span id="boundTabUrl">Abra a fila e crie a aba dedicada.</span></div>
-          <button id="createDedicatedBtn" class="primary full">Criar / substituir aba dedicada</button>
+          <button id="createDedicatedBtn" class="primary full">Usar página atual</button>
         </div>
       </section>
 
+      <section class="card">
+        <h2>Configuração guiada</h2><p>1. Usar página atual · 2. Detectar · 3. Confirmar · 4. Alertas · 5. Testar · 6. Iniciar</p><p>Os testes usam a configuração salva. O diagnóstico não altera o baseline.</p>
+        <button id="detectQueueBtn" class="secondary full">Detectar fila nesta página</button>
+        <div id="detectionResults"></div>
+        <button id="manualSetupBtn" class="link-btn">Selecionar manualmente</button>
+        <div class="actions"><button id="diagnoseBtn" class="ghost">Testar monitor</button><button id="testAllAlertsBtn" class="ghost">Testar alertas</button></div>
+        <button id="finishSetupBtn" class="primary full">Iniciar monitor</button>
+        <pre id="diagnosticResults" role="status" style="white-space:pre-wrap"></pre>
+        <details><summary>Importar / exportar preferências</summary><p>Arquivo sem URLs, seletores, tokens, webhook, nomes livres, histórico ou conteúdo. Confirme novamente a fonte após importar.</p>
+          <button id="exportConfigBtn" class="secondary">Exportar configuração</button><label for="importConfigFile">Importar configuração</label><input type="file" id="importConfigFile" accept="application/json,.json">
+        </details>
+      </section>
       <section id="visualSetup" class="card hidden">
         <h2>Elemento monitorado</h2><p>Escolha um texto, contador ou indicador. A extensão observa alterações; não executa código informado por você.</p>
         <button id="pickVisualBtn" class="primary full">Selecionar elemento na página</button>
@@ -158,7 +171,7 @@
       </section>
     </section>
 
-    <section id="tab-integrations" class="tab-panel">
+    <section id="tab-integrations" class="tab-panel"><button id="testChannelsBtn" class="primary full">Testar alertas configurados</button>
       <section class="card integration-card">
         <div class="integration-head"><div class="integration-icon">🔔</div><div><h2>Desktop + som</h2><p>Alerta detalhado somente neste computador.</p></div></div>
         <label class="toggle"><input id="notificationsEnabled" type="checkbox" checked><span><strong>Notificação do Chrome/Windows</strong></span></label>
@@ -175,21 +188,24 @@
         <div class="integration-head"><div class="integration-icon">✈️</div><div><h2>Telegram</h2><p>Push remoto sanitizado para o celular.</p></div></div>
         <div class="privacy">O token fica no perfil local do Chrome; não é um cofre de credenciais. Use um bot dedicado. Nunca envia IDs, quantidade da fila, nome da fila, URL ou conteúdo do chamado.</div>
         <label class="toggle"><input id="telegramEnabled" type="checkbox"><span><strong>Ativar Telegram</strong></span></label>
+        <details id="telegramWizard"><summary>Conectar Telegram</summary><p>1. Crie um bot no BotFather do Telegram, informe o token e salve. 2. Busque a conversa. 3. Teste para conectar. O Chat ID fica nas opções avançadas.</p>
         <label for="telegramBotToken">Token do bot</label>
         <input id="telegramBotToken" type="password" placeholder="123456:ABC...">
-        <label for="telegramChatId">Chat ID</label>
+        <details><summary>Opções avançadas</summary><label for="telegramChatId">Chat ID</label>
         <div class="field-action"><input id="telegramChatId" type="text" placeholder="Descobrir automaticamente"><button id="discoverChatBtn" class="small-btn">Buscar</button></div>
-        <div class="actions"><button id="saveTelegramBtn" class="secondary">Salvar</button><button id="testTelegramBtn" class="ghost">Testar</button></div>
+        </details><button id="findTelegramBtn" class="secondary full">Buscar conversa automaticamente</button>
+        <div class="actions"><button id="saveTelegramBtn" class="secondary">Salvar</button><button id="testTelegramBtn" class="ghost">Testar e conectar</button></div></details>
       </section>
 
+      <section class="card"><p>Email · Em breve &nbsp; Teams · Em breve &nbsp; Slack · Em breve</p></section>
       <section class="card integration-card">
-        <div class="integration-head"><div class="integration-icon">⚡</div><div><h2>Webhook / automações</h2><p>Dispara um evento sanitizado para um endpoint HTTPS configurado por você.</p></div></div>
+        <details><summary>Webhook avançado</summary><div class="integration-head"><div class="integration-icon">⚡</div><div><h2>Webhook / automações</h2><p>Dispara um evento sanitizado para um endpoint HTTPS configurado por você.</p></div></div>
         <div class="privacy">O payload contém apenas o tipo do evento e horário. O fluxo pode usar “Send an email (V2)” ou publicar no Teams.</div>
         <label class="toggle"><input id="automationEnabled" type="checkbox"><span><strong>Ativar automação externa</strong></span></label>
         <label for="automationWebhookUrl">Endpoint HTTPS</label>
         <textarea id="automationWebhookUrl" rows="3" placeholder="https://..."></textarea>
         <div class="actions"><button id="saveAutomationBtn" class="secondary">Salvar</button><button id="testAutomationBtn" class="ghost">Testar webhook</button></div>
-      </section>
+      </details></section>
     </section>
 
     <section id="tab-history" class="tab-panel">
